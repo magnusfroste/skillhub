@@ -423,4 +423,14 @@ condensed. After it, an ingest added a provenance header on its own and wrote th
 to the next reader — *"the original is the authoritative source; this text is condensed, not a
 verbatim quotation; preserve the clause numbers when answering."*
 
-Good enough to answer from. Not yet good enough to cite from. That is the honest state of it.
+Re-measured on a fresh install after the rule landed: the ingest kept **32** of the manual's
+clause numbers (from 2, then 12), used no quotation marks at all, and a second agent that had
+never seen the document answered a design question citing 5.3, 8.3.1–8.3.6, 8.5.1–8.5.2 and
+8.6 by number. Good enough to cite from, for prose.
+
+What still does not survive is a **table**. The manual's gate table lists four roles that
+sign off G5; the condensed skill kept two of them, in a sentence. The agent did the right
+thing with that — it deferred to the PDF for the full role table instead of inventing the
+other two — which is the honesty property working and the limitation stated at once.
+Structured content in a document wants a table in the store, not a paragraph in a skill;
+that is a structure request, and the ingest rule does not say so yet.

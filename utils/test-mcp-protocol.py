@@ -32,7 +32,11 @@ def main():
     g.add_argument("--apikey", help="MCP key; identity resolved by the gateway")
     g.add_argument("--agent", help="agent_NN; sets x-consumer-username directly (no gateway)")
     a = ap.parse_args()
-    headers = {"content-type": "application/json"}
+    # A User-Agent, because a Cloudflare tunnel's browser-integrity check answers HTTP 403
+    # "error code: 1010" to Python's default "Python-urllib/3.x" before the request reaches
+    # the gateway. Measured 2026-09-14: eleven of fourteen checks failed on a server that was
+    # fine. Hermes sends "python-httpx2/..." and passes; so does this once it identifies itself.
+    headers = {"content-type": "application/json", "User-Agent": "skillhub-test-mcp-protocol/1"}
     if a.apikey: headers["apikey"] = a.apikey
     else: headers["x-consumer-username"] = a.agent
 

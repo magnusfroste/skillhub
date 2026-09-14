@@ -39,8 +39,29 @@ end $$;
 -- retire any agent's skill with it. The ownership check belongs in the tool that wraps
 -- it, where the gateway's verified identity is available -- see the build order in
 -- demo/REFACTOR-EN.md. Calling this directly is an admin action.
-create or replace function public.retire_skill(slug_in text, reason text, replaced_by text default null)
-returns text language plpgsql as $$
+-- The three-argument form is dropped first: `create or replace` with a new signature adds
+-- an OVERLOAD, and the old one would keep answering three-argument callers as if nothing
+-- had changed. This four-argument version ran in production from 2026-09-14 and existed in
+-- no file -- applied from a scratch file while the caller in platform_tools.sql was updated
+-- in the repo -- so a fresh install had a caller with four arguments and a function with
+-- three, and every skill retirement failed with "function does not exist". Found by the
+-- smoke test on a virgin instance; the empty-database test now retires a skill so it
+-- cannot recur silently.
+drop function if exists public.retire_skill(text, text, text);
+
+-- retire_skill with an author scope, and it stops erasing the version chain.
+--
+-- Ownership in the library is per VERSION. Retire used to check the author of the newest
+-- version and then update `where slug = slug_in` -- every row of that slug, whoever wrote
+-- it -- so publishing a better version of a colleague's skill quietly made you able to
+-- retire theirs. Verified 2026-09-14: agent_01 retired agent_03's v1.0.0, and the
+-- superseded_by link on it was overwritten with null in the same statement.
+--
+-- The caretaker passes only_author => null and retires the whole slug. That is its job.
+create or replace function public.retire_skill(
+  slug_in text, reason text default null, replaced_by text default null,
+  only_author text default null) returns text
+language plpgsql security definer set search_path = public, platform as $$
 declare n int;
 begin
   if replaced_by is not null and not exists (select 1 from public.skill_library where slug = replaced_by) then
@@ -48,13 +69,22 @@ begin
   end if;
   update public.skill_library
      set status = 'deprecated', deprecated_at = now(),
-         deprecated_reason = reason, superseded_by = replaced_by, updated_at = now()
-   where slug = slug_in;
+         deprecated_reason = reason,
+         -- coalesce, not assignment: a retire with no replacement named must not wipe the
+         -- link a later publish already set.
+         superseded_by = coalesce(replaced_by, superseded_by),
+         updated_at = now()
+   where slug = slug_in
+     and (only_author is null or author_name = only_author);
   get diagnostics n = row_count;
-  if n = 0 then raise exception 'No skill with slug %', slug_in; end if;
-  return format('%s retired%s', slug_in, coalesce(', replaced by '||replaced_by, ''));
+  if n = 0 then
+    if only_author is null then raise exception 'No skill with slug %', slug_in;
+    else raise exception 'You have no version of "%" to retire -- every version there belongs to somebody else.', slug_in;
+    end if;
+  end if;
+  return format('%s: %s version(s) retired%s', slug_in, n, coalesce(', replaced by '||replaced_by, ''));
 end $$;
-comment on function public.retire_skill(text,text,text) is 'Mark a skill as superseded or out of date. Never delete a skill -- somebody may have followed it.';
+comment on function public.retire_skill(text,text,text,text) is 'Mark a skill as superseded or out of date, scoped to the caller''s own versions unless only_author is null (the caretaker). Never delete a skill -- somebody may have followed it.';
 
 -- Confirm a skill still holds. This is what separates a living library from an archive.
 create or replace function public.confirm_skill(slug_in text, agent text)

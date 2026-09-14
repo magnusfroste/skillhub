@@ -1,0 +1,161 @@
+# Verifying your installation
+
+Five receipts, in the order they should be run. Each one answers a different question, and
+each one exists because the answer was once wrong while everything looked fine. Run them in
+this order the first time; run the ones that apply after any change.
+
+| # | Question | Receipt | Touches your instance? |
+|---|---|---|---|
+| 1 | Does this repository build a working store from nothing? | `utils/test-seed-on-empty-db.sh` | No — a throwaway database |
+| 2 | Is what is running what is committed? | `docker logs supabase-seed` + `utils/check-deployed-drift.sh` | Read-only |
+| 3 | Do all fifteen tools answer through the gateway? | `utils/smoke-test-tools.sh` | Writes, then retires what it wrote |
+| 4 | Does the server speak the current MCP revision, and the legacy one? | `utils/test-mcp-protocol.py` | Read-only |
+| 5 | Does a real client adopt the current revision? | `utils/probe-mcp-era.py` | Read-only, run inside a client |
+
+Then one thing no script can do for you: ask an agent a question whose answer you know.
+
+---
+
+## 1. From nothing: `test-seed-on-empty-db.sh`
+
+```sh
+sh utils/test-seed-on-empty-db.sh
+```
+
+Raises an empty Postgres from the same image the stack uses, seeds it, seeds it **again** (the
+seed runs on every boot, so a second run has to be a no-op), and then checks that the store
+*answers* — sixteen checks, from "the tables carry the convention columns" to "a skill
+published through the gate can be retired by its author and ends up deprecated, not deleted".
+
+Expect: `PASS -- an empty database and this repo give a working data store.`
+
+Why it exists: every earlier apply had been against a database where the objects already
+existed. The first run of this test found five defects a fresh install would have hit and
+nobody had, including six columns that were in production and in no file. A later run found a
+function that the repo's own caller invoked with four arguments and the repo's own definition
+took with three — every skill retirement failed on a fresh install, and the test had passed
+because it never retired a skill. It does now. Nothing here is visible by reading.
+
+Needs Docker on the machine you run it from. Takes about a minute.
+
+## 2. What is actually running: the seed log and the drift check
+
+```sh
+docker logs supabase-seed
+sh utils/check-deployed-drift.sh          # on the host, from the working checkout
+```
+
+The seed log should show nine files and `ok` after each, ending in `Done. Re-running this
+changes nothing on an up-to-date database.` If a file says `FAILED`, the message under it is
+the cause; the store is incomplete until it passes, and it is safe to re-run by hand.
+
+The drift check compares the clone you edit with the clone the containers mount. Expect
+`deployed is 0 commit(s) behind`, `none` under in-place edits, and `same` for the four files
+the containers read. Anything else means what is running is not what git says — which is how
+a rule that closed the raw SQL door once lived only as an uncommitted edit on a server, one
+Deploy away from silently reopening it.
+
+## 3. Every tool, through the gateway: `smoke-test-tools.sh`
+
+```sh
+sh utils/smoke-test-tools.sh https://<store>/skillhub <MCP_KEY_NN>
+```
+
+Calls all fifteen tools as that agent, through Kong, exactly as a client would. The nine
+reading tools must answer; the writing tools write a note, a skill, a document record and a
+structure request, and the test then **retires** the first three — that is the retire test,
+and it also means the run leaves nothing behind that search will find.
+
+Expect: `All tools answered.` and three `ok    skillhub_retire` lines.
+
+One row stays: the structure request, `open`. Agents cannot close requests; the caretaker does,
+and the test prints the call. That is the design working, not litter. Pass a table name as the
+third argument to exercise `add_rows` as well.
+
+Why it exists: four tools once shipped broken — each failed on every call it ever received
+because a parameter shared a name with a column — and stayed broken for days, because agents
+had another door. A broken door goes unnoticed for exactly as long as the door is optional.
+
+## 4. The protocol, both eras: `test-mcp-protocol.py`
+
+```sh
+python3 utils/test-mcp-protocol.py https://<store>/skillhub --apikey <MCP_KEY_NN>
+```
+
+Fourteen checks. The legacy `initialize` handshake still answers; `server/discover` — the one
+method the 2026-07-28 revision says a server MUST implement — answers with the supported
+versions; every result carries `resultType` and the server's identity; `tools/list` carries its
+cache hints; an unknown version gets `-32022` with the supported list, and a modern request
+missing its client capabilities gets `-32602`, both as HTTP 400 so a client can tell a modern
+server from a legacy one. A spoofed identity in the arguments is still overwritten on the
+modern path.
+
+Expect: `PASS -- 0 failing check(s)`.
+
+Behind a Cloudflare tunnel the script identifies itself with a User-Agent, because the edge
+answers HTTP 403 `error code: 1010` to Python's default one before the request reaches the
+gateway. Eleven of fourteen checks failed that way once, on a server that was fine.
+
+## 5. What a real client does: `probe-mcp-era.py`
+
+Number 4 proves the server. This proves the other half: that a client's own SDK, in its default
+`auto` mode, actually adopts the modern revision rather than falling back. The fallback is
+silent — every tool keeps working on the legacy path — so a server can look fine in every log
+while no client is on the path it advertises. That was the state here until `server/discover`
+existed.
+
+It needs the `mcp` SDK, so run it where a client runs, for example inside a Hermes container:
+
+```sh
+U=https://<store>/skillhub K=<MCP_KEY_NN> /opt/hermes/.venv/bin/python utils/probe-mcp-era.py
+```
+
+Expect `discover_result set: True`, `initialize_result set: False`, and the negotiated version.
+
+---
+
+## 6. Ask an agent something you know the answer to
+
+Scripts prove the mechanism. Only an agent proves the store is usable, and the useful test is
+a question whose correct answer depends on a rule written down in the store — because the
+wrong answer arrives as a confident number, not as an error.
+
+The pattern, with the data this project used: a quality register where sixteen rows out of
+5,812 carry sentinel values in the quantity column. The rule saying so is in the column's
+comment and in a published skill. Ask, with no hints:
+
+> *How many individual defects were reported in total?*
+
+An agent that searches the store before it computes answers **28,638**. One that goes straight
+to the data answers **1,091,957** — thirty-eight times too high, stated with confidence. Same
+tools, same data; the difference is whether it looked. That single number is a regression test
+for the whole retrieval layer: search across column comments, the fallback to meaning when no
+word matches, and the operating rules the agent reads at the start of a session.
+
+For your own data, construct the equivalent: one rule that changes an answer, written into a
+column comment or a skill, and one question that only comes out right if the rule was read.
+
+Two more worth asking once, because each exercises a wall:
+
+- **Hand an agent a document and ask it to put it in the store.** It should register the file
+  *and* publish the content, keeping the document's own section numbers, and it should not
+  present condensed text in quotation marks. An agent that registers the file and reports that
+  a person must upload it has hit a rule that was wrong here once and is fixed; if you see it,
+  the rule it read is stale.
+- **Ask a colleague's agent to overwrite the first agent's skill.** It must be refused with the
+  owner's name and the next version number to use, and publishing that next version must leave
+  the original in place, marked superseded.
+
+---
+
+## When something fails
+
+- `FAILED` in the seed log → the store is incomplete; fix the file, re-run `utils/seed.sh`.
+- Drift check shows in-place edits → copy them into the working checkout, commit, push, deploy.
+  Do not press Deploy first: that is how they disappear.
+- A key answers 401 → Kong renders its list of permitted callers when the container is
+  *created*. A key added after the first deploy needs Kong recreated, not restarted.
+- Semantic search reports it is off, or new content takes five minutes to become findable →
+  `EMBEDDING_URL` and `EMBEDDING_KEY` are empty. They are on purpose; set them.
+- HTTP 403 `error code: 1010` → the edge rejected your User-Agent before the gateway saw the
+  request. Send one.

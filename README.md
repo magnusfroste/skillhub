@@ -88,7 +88,23 @@ fifteen tools — is `demo/*.sql`, and it is applied by the `seed` service on ev
 3. **Hand out a key**: `sh utils/make-agent-invite.sh agent_04 https://<domain>` and paste
    the result into that person's agent. `skillhub_whoami` should answer `agent_04`.
 
-Verify the whole thing without touching anything real:
+Three things a new environment trips on, all measured:
+
+- **Semantic search and index-on-write are off until `EMBEDDING_URL` and `EMBEDDING_KEY` are
+  set.** `prepare-easypanel-env.sh` leaves them empty on purpose (they are your provider's
+  key), and nothing fails loudly without them: keyword search still works, `skillhub_similar`
+  reports that it is off, and new content becomes findable on the five-minute cron instead of
+  in about three seconds. Set them before anyone measures the store.
+- **Keys present at the first deploy need no extra step; keys added later do.** Kong renders
+  its list of permitted callers when the container is created. A fresh deploy creates it with
+  whatever `MCP_KEY_NN` the panel holds. Filling a slot afterwards requires *recreating* Kong,
+  not restarting it — a restart keeps the old list in memory and the new key answers 401.
+- **Behind a Cloudflare tunnel, a client must send a User-Agent.** The edge's browser-integrity
+  check answers HTTP 403 `error code: 1010` to Python's default `Python-urllib/…` before the
+  request reaches the gateway. Hermes (`python-httpx2/…`) passes; a hand-rolled script may not.
+  Eleven of fourteen protocol checks failed that way on a server that was fine.
+
+**[VERIFY.md](VERIFY.md)** lists every receipt in the order to run them, what each proves, and what to do when one fails. The first one, without touching anything real:
 
 ```sh
 sh utils/test-seed-on-empty-db.sh

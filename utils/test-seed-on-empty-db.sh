@@ -30,9 +30,19 @@ cleanup
 
 echo "1. empty database from $IMAGE"
 docker run -d --name "$NAME" -e POSTGRES_PASSWORD=seedtest -e POSTGRES_HOST_AUTH_METHOD=trust "$IMAGE" >/dev/null
-n=0; until docker exec "$NAME" pg_isready -U postgres >/dev/null 2>&1 || [ $n -ge 90 ]; do sleep 2; n=$((n+1)); done
-[ $n -lt 90 ] || { echo "   database never became ready"; exit 1; }
-echo "   ready"
+# Wait for a STABLE database, not the first "ready". The Supabase image initialises, then
+# restarts itself once; pg_isready answers during the first window, the seed starts, and
+# the server goes away under it with "the database system is starting up". Measured
+# 2026-09-14 after three clean passes -- a race, not a regression. So: ready on five
+# consecutive checks a second apart, and a real query has to succeed.
+n=0; stable=0
+until [ $stable -ge 5 ] || [ $n -ge 120 ]; do
+  if docker exec "$NAME" pg_isready -U postgres >/dev/null 2>&1 \
+     && docker exec "$NAME" psql -U postgres -At -c 'select 1' >/dev/null 2>&1; then stable=$((stable+1)); else stable=0; fi
+  sleep 1; n=$((n+1))
+done
+[ $stable -ge 5 ] || { echo "   database never became stably ready"; exit 1; }
+echo "   ready and stable (${n}s)"
 
 q() { docker exec "$NAME" psql -U postgres -At -c "$1"; }
 
@@ -73,6 +83,18 @@ check "and it is attributed to the caller" \
   "select owner from public.notes where title='Seed test'" "agent_01"
 check "the change log caught it" \
   "select count(*) from platform.events where table_name='notes' and operation='insert'" "1"
+# Retirement, end to end, because a caller/function signature mismatch here shipped once:
+# skillhub_retire passed four arguments to a retire_skill that a fresh install created with
+# three. Every retirement failed on a virgin instance and this test passed, since it never
+# retired anything. publish requires a prior search, so search first.
+check "a search then a publish through the gate works" \
+  "select (public.skillhub_search('seed test skill', 10, 'agent_01') is not null)::text || ':' || (public.skillhub_publish_skill('agent_01','seed-test-skill','Seed test','A skill written by the empty-database test to prove the publish gate and skill retirement work on a fresh install. It carries no procedure and is retired by the same test a moment later, which is the point: retirement has to work from nothing.','test') ? 'slug')::text" "true:true"
+check "retiring that skill works (the four-argument retire_skill exists)" \
+  "select (public.skillhub_retire('agent_01','skill','seed-test-skill','seed test cleanup') ? 'retired_by')::text" "true"
+check "and it is deprecated, not deleted" \
+  "select status from public.skill_library where slug='seed-test-skill'" "deprecated"
+check "retiring the note works too" \
+  "select (public.skillhub_retire('agent_01','note',(select id::text from public.notes where title='Seed test'),'seed test cleanup') ? 'retired_by')::text" "true"
 
 echo
 if [ "$fail" = "0" ]; then echo "PASS -- an empty database and this repo give a working data store."

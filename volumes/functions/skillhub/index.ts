@@ -29,7 +29,28 @@
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "http://api-gw:8000";
 const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
-const PROTOCOL = "2025-03-26";
+// Two protocol eras, served on the same endpoint.
+//
+// 2026-07-28 removed the initialize handshake and made every request carry its own version
+// and client capabilities in _meta -- the protocol became stateless at the transport level,
+// which this server always was. So the bump is additive: server/discover (the one MUST),
+// resultType and serverInfo on every result, cache hints on tools/list, and a version check
+// that answers -32022 with the list we support. The initialize handshake stays for legacy
+// clients; a request that carries modern _meta is served the modern way, and one that opens
+// with initialize is served the legacy way, which is exactly what the spec's dual-era server
+// is allowed to do. Nothing on an existing device has to change.
+const PROTOCOL_MODERN = "2026-07-28";
+const PROTOCOL_LEGACY = "2025-03-26";
+const SUPPORTED_VERSIONS = [PROTOCOL_MODERN, PROTOCOL_LEGACY];
+const SERVER_INFO = { name: "skillhub", title: "Shared data store", version: "1.1.0" };
+const META_VERSION = "io.modelcontextprotocol/protocolVersion";
+const META_CLIENT_CAPS = "io.modelcontextprotocol/clientCapabilities";
+const META_SERVER_INFO = "io.modelcontextprotocol/serverInfo";
+const INSTRUCTIONS =
+  "Tools for the organisation's shared data store. Run skillhub_overview first in a new session, and skillhub_rules before you write anything. Always run skillhub_search before creating something new -- publishing refuses without it. Ownership of what you write is filled in from your API key and cannot be set by you.";
+// Cache hints required on list results from 2026-07-28. The tool list only changes with a
+// deploy, so an hour is conservative; private because the answer depends on the caller's key.
+const LIST_CACHE = { ttlMs: 3_600_000, cacheScope: "private" };
 
 type Tool = {
   name: string;
@@ -274,8 +295,22 @@ async function callRpc(fn: string, args: Record<string, unknown>): Promise<unkno
   }
 }
 
-const rpcOk = (id: unknown, result: unknown) => ({ jsonrpc: "2.0", id, result });
-const rpcErr = (id: unknown, code: number, message: string) => ({ jsonrpc: "2.0", id, error: { code, message } });
+// Every result carries resultType ("complete" for an ordinary answer) and the server's
+// identity in _meta, both from 2026-07-28. Legacy clients ignore fields they do not know, and
+// the spec requires modern clients to treat an ABSENT resultType as complete -- so adding it
+// unconditionally is safe in both directions.
+const rpcOk = (id: unknown, result: Record<string, unknown>) => ({
+  jsonrpc: "2.0", id,
+  result: {
+    resultType: "complete",
+    ...result,
+    _meta: { ...((result._meta as Record<string, unknown> | undefined) ?? {}), [META_SERVER_INFO]: SERVER_INFO },
+  },
+});
+const rpcErr = (id: unknown, code: number, message: string, data?: unknown) =>
+  ({ jsonrpc: "2.0", id, error: { code, message, ...(data === undefined ? {} : { data }) } });
+// Errors the spec says must travel with HTTP 400 on Streamable HTTP.
+const BAD_REQUEST_CODES = new Set([-32602, -32021, -32022]);
 
 /** Embeds a question and returns the nearest objects. null when no endpoint is configured. */
 async function semanticSearch(query: string, maxHits: number): Promise<unknown[] | null> {
@@ -298,17 +333,44 @@ async function semanticSearch(query: string, maxHits: number): Promise<unknown[]
 
 async function handle(body: any, agent: string): Promise<unknown | null> {
   const { id, method, params } = body ?? {};
+  const meta = (params?._meta ?? {}) as Record<string, unknown>;
 
+  // Modern requests declare their version per request. Unknown -> -32022 with what we do
+  // support, so the client can retry with one of them. A request with no declaration is a
+  // legacy client and is served as before.
+  const requested = typeof meta[META_VERSION] === "string" ? String(meta[META_VERSION]) : undefined;
+  if (requested !== undefined) {
+    if (!SUPPORTED_VERSIONS.includes(requested)) {
+      return rpcErr(id, -32022, "Unsupported protocol version",
+        { supported: SUPPORTED_VERSIONS, requested });
+    }
+    // A modern request is malformed without client capabilities. Only checked when the
+    // client has declared a modern version -- legacy clients never send either field.
+    if (requested === PROTOCOL_MODERN && typeof meta[META_CLIENT_CAPS] !== "object") {
+      return rpcErr(id, -32602, `Missing required _meta field ${META_CLIENT_CAPS}`);
+    }
+  }
+
+  // The one method 2026-07-28 says a server MUST implement. Also the backward-compatibility
+  // probe: a dual-era client sends it first and falls back to initialize on anything that is
+  // not a recognised modern answer.
+  if (method === "server/discover") {
+    return rpcOk(id, {
+      supportedVersions: SUPPORTED_VERSIONS,
+      capabilities: { tools: {} },
+      instructions: INSTRUCTIONS,
+      ...LIST_CACHE,
+    });
+  }
+
+  // Legacy handshake, kept for clients on 2025-11-25 and earlier. A modern client never sends
+  // it; a legacy client cannot proceed without it.
   if (method === "initialize") {
     return rpcOk(id, {
-      protocolVersion: PROTOCOL,
+      protocolVersion: PROTOCOL_LEGACY,
       capabilities: { tools: {} },
-      serverInfo: { name: "skillhub", title: "Shared data store", version: "1.1.0" },
-      // These three tool names were skillhub_oversikt / _regler / _sok until 2026-09-14 --
-      // the pre-refactor Swedish names, none of which has existed since. Any client that
-      // does show `instructions` was being sent to three tools that do not exist.
-      instructions:
-        "Tools for the organisation's shared data store. Run skillhub_overview first in a new session, and skillhub_rules before you write anything. Always run skillhub_search before creating something new -- publishing refuses without it. Ownership of what you write is filled in from your API key and cannot be set by you.",
+      serverInfo: SERVER_INFO,
+      instructions: INSTRUCTIONS,
     });
   }
 
@@ -316,8 +378,10 @@ async function handle(body: any, agent: string): Promise<unknown | null> {
   if (typeof method === "string" && method.startsWith("notifications/")) return null;
 
   if (method === "tools/list") {
+    // Deterministic order (a static array) so clients can cache and prompt caches hit.
     return rpcOk(id, {
       tools: TOOLS.map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema })),
+      ...LIST_CACHE,
     });
   }
 
@@ -394,6 +458,7 @@ async function handle(body: any, agent: string): Promise<unknown | null> {
     }
   }
 
+  // Removed in 2026-07-28; harmless to keep answering for legacy clients.
   if (method === "ping") return rpcOk(id, {});
   return rpcErr(id, -32601, `Unknown method: ${method}`);
 }
@@ -417,5 +482,9 @@ Deno.serve(async (req: Request) => {
 
   const answer = await handle(body, agent);
   if (answer === null) return new Response(null, { status: 202 });
-  return Response.json(answer, { headers: { "Content-Type": "application/json" } });
+  // The spec requires HTTP 400 for malformed modern requests and unsupported versions, so a
+  // dual-era client can tell a modern server from a legacy one by the body of the 400.
+  const code = (answer as { error?: { code?: number } }).error?.code;
+  const status = code !== undefined && BAD_REQUEST_CODES.has(code) ? 400 : 200;
+  return Response.json(answer, { status, headers: { "Content-Type": "application/json" } });
 });

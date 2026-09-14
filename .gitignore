@@ -5,3 +5,6 @@ docker-compose.override.yml
 volumes/db/data
 volumes/storage
 .claude/
+
+# python bytecode from running utils/*.py
+__pycache__/

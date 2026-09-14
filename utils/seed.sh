@@ -23,7 +23,10 @@
 # went through, not by reading the files. Do not sort this list.
 set -eu
 
-REPO="$(cd "$(dirname "$0")/.." && pwd)"
+# Resolve to a clean absolute path. Mounted at /seed.sh inside the seed container, dirname
+# is "/" and "/.." is "/", and the naive form printed "///demo" in every deploy log.
+REPO="$(cd "$(dirname "$0")/.." && pwd -P)"
+REPO="${REPO%/}"   # "" when mounted at the root, so "${REPO}/demo" is "/demo", not "//demo"
 DSN="${1:-}"
 
 FILES="skill_library.sql conventions.sql platform.sql platform_lifecycle.sql platform_loading.sql platform_entry.sql platform_vector.sql platform_embed.sql platform_tools.sql"
@@ -37,7 +40,7 @@ run() {
   fi
 }
 
-echo "Seeding the shared data store from $REPO/demo"
+echo "Seeding the shared data store from ${REPO}/demo"
 for f in $FILES; do
   [ -f "$REPO/demo/$f" ] || { echo "  MISSING $f -- the store would be incomplete, stopping."; exit 1; }
   printf '  %-26s ' "$f"

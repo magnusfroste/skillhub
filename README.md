@@ -131,6 +131,29 @@ and the default keeps the names a single instance has always had.
 
 Budget about 1.1 GiB of memory for a full stack, measured on a live one.
 
+### The gateway: Kong, deliberately, for now
+
+Upstream Supabase made Envoy the default API gateway in August 2026 and moved Kong to an
+optional override (`docker-compose.kong.yml`), noting that the OSS Kong line is no longer
+actively maintained and that a customised `kong.yml` does not carry over — it silently stops
+applying. This repository runs Kong on purpose, and the reason is the one thing that is
+Kong-specific here: **per-agent identity**. Ten consumers with API keys, ACL groups on the two
+routes, and the `X-Consumer-Username` header that every writing tool takes its identity from.
+Upstream's Envoy configuration is a 27-line stub that translates the new `sb_*` key scheme
+into JWTs; it has no per-key identity of its own. Porting is an `ext_authz` filter or a static
+key-to-header map plus the two route ACLs — a contained piece of work, not a rewrite — and it
+is on the list. Until then, updating from upstream means keeping the Kong override, and the
+gateway is the one component here that will not get upstream's security hardening for free.
+
+### MCP protocol: both eras
+
+The server speaks MCP `2026-07-28` (stateless, per-request `_meta`, `server/discover`) and
+the legacy `initialize` handshake side by side. A dual-era client such as Hermes probes modern
+first and falls back only if the probe fails; until `server/discover` existed here, every
+client fell back and nobody noticed. `utils/test-mcp-protocol.py` checks both paths, the
+required `resultType`, the cache hints on `tools/list`, and the two error codes the spec says
+must travel with HTTP 400.
+
 ### Two clones, and the one that is actually running
 
 You edit here. The containers mount the clone Easypanel pulls into

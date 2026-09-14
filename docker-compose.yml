@@ -489,12 +489,13 @@ services:
       SUPABASE_SERVICE_ROLE_KEY: ${SERVICE_ROLE_KEY}
       # supabase-easy: privat embeddings-endpoint, läst av edge-funktionen `embed`.
       # Sätts i Easypanels Environment; utan dem hoppar funktionen över inbäddning.
-      # EMBEDDING_DIM måste matcha plattform.inbaddningar.vektor, som är vector(1536)
+      # EMBEDDING_DIM must match platform.embeddings.vector -- vector(1536) by default; see demo/platform_vector.sql to change it
       # från start — se demo/plattform_vektor.sql om modellen ger en annan dimension.
       EMBEDDING_URL: ${EMBEDDING_URL:-}
       EMBEDDING_KEY: ${EMBEDDING_KEY:-}
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-}
       EMBEDDING_DIM: ${EMBEDDING_DIM:-1536}
+      EMBEDDING_MAX_INPUTS: ${EMBEDDING_MAX_INPUTS:-8}
       # New opaque API keys
       SUPABASE_PUBLISHABLE_KEYS: "{\"default\":\"${SUPABASE_PUBLISHABLE_KEY:-}\"}"
       SUPABASE_SECRET_KEYS: "{\"default\":\"${SUPABASE_SECRET_KEY:-}\"}"

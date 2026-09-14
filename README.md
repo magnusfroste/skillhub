@@ -104,7 +104,7 @@ Three things a new environment trips on, all measured:
   request reaches the gateway. Hermes (`python-httpx2/…`) passes; a hand-rolled script may not.
   Eleven of fourteen protocol checks failed that way on a server that was fine.
 
-**[VERIFY.md](VERIFY.md)** lists every receipt in the order to run them, what each proves, and what to do when one fails. The first one, without touching anything real:
+**[DEMO.md](DEMO.md)** is the one idea and the eight calls that show it — rooms and shelves — with every refusal quoted as it was answered. **[VERIFY.md](VERIFY.md)** lists every receipt in the order to run them, what each proves, and what to do when one fails. The first one, without touching anything real:
 
 ```sh
 sh utils/test-seed-on-empty-db.sh

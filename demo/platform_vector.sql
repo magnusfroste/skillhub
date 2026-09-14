@@ -38,8 +38,21 @@ begin
 
   execute 'drop index if exists platform.embeddings_vector_idx';
   execute format('alter table platform.embeddings alter column vector type vector(%s)', wanted);
-  execute 'create index embeddings_vector_idx on platform.embeddings using hnsw (vector vector_cosine_ops)';
-  raise notice 'The vector store is now vector(%). Set EMBEDDING_DIM to the same value.', wanted;
+  -- pgvector's HNSW index takes vector up to 2,000 dimensions and halfvec up to 4,000. Above
+  -- that there is no index, and that is fine at this store's scale: an exact cosine scan over
+  -- a few thousand rows is milliseconds. Qwen3-Embedding-8B, the first local model this ran
+  -- against (2026-09-14), is 4,096 native -- so the third branch is not theoretical. A model
+  -- trained with Matryoshka can be truncated to 1,024 in the edge function later if the
+  -- table ever grows enough for the index to matter.
+  if wanted <= 2000 then
+    execute 'create index embeddings_vector_idx on platform.embeddings using hnsw (vector vector_cosine_ops)';
+    raise notice 'The vector store is now vector(%) with an HNSW index. Set EMBEDDING_DIM to the same value.', wanted;
+  elsif wanted <= 4000 then
+    execute format('create index embeddings_vector_idx on platform.embeddings using hnsw ((vector::halfvec(%s)) halfvec_cosine_ops)', wanted);
+    raise notice 'The vector store is now vector(%) with a half-precision HNSW index. Set EMBEDDING_DIM to the same value.', wanted;
+  else
+    raise notice 'The vector store is now vector(%) with NO index: HNSW stops at 4,000 dimensions. Searches are exact scans, which is fine below tens of thousands of rows. Set EMBEDDING_DIM to the same value.', wanted;
+  end if;
 end $$;
 
 -- The search function has to take the same dimension.

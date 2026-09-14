@@ -36,8 +36,28 @@ async function rpc(fn: string, args: Record<string, unknown>): Promise<any> {
   try { return JSON.parse(text); } catch { return text; }
 }
 
-/** Embeds a list of texts. Throws with the endpoint's own message. */
+// Inputs per request to the embedder. Providers cap this and refuse the whole request
+// above it -- text-embeddings-inference at --max-client-batch-size (32 by default, 8 on a
+// CPU deployment measured 2026-09-14), OpenAI at 2048. The candidates a run fetches (the
+// cron asks for 100) are sent in slices of this size, so a small server never sees a
+// request it will refuse and nothing is silently left unembedded.
+const EMBEDDING_MAX_INPUTS = Math.max(1, Number(Deno.env.get("EMBEDDING_MAX_INPUTS") ?? "8"));
+/** Upstream requests made by the last embed() call -- reported in the response so the
+ *  slicing is observable rather than assumed. */
+export let lastRequests = 0;
+
+/** Embeds a list of texts, in slices the endpoint accepts. Throws with the endpoint's own message. */
 export async function embed(texts: string[]): Promise<number[][]> {
+  const out: number[][] = [];
+  lastRequests = 0;
+  for (let i = 0; i < texts.length; i += EMBEDDING_MAX_INPUTS) {
+    out.push(...await embedOnce(texts.slice(i, i + EMBEDDING_MAX_INPUTS)));
+    lastRequests++;
+  }
+  return out;
+}
+
+async function embedOnce(texts: string[]): Promise<number[][]> {
   if (!EMBEDDING_URL) throw new Error("EMBEDDING_URL is not set.");
   const res = await fetch(EMBEDDING_URL, {
     method: "POST",
@@ -107,6 +127,8 @@ Deno.serve(async (req: Request) => {
       status: "done",
       model: EMBEDDING_MODEL,
       dimension: EMBEDDING_DIM,
+      requests: lastRequests,
+      max_inputs_per_request: EMBEDDING_MAX_INPUTS,
       embedded: saved,
       errors: errors.slice(0, 5),
       comment: saved === batch ? "Full batch -- run again to continue." : "Everything that was waiting is embedded.",

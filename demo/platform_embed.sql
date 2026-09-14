@@ -189,8 +189,13 @@ begin
   if coalesce(to_jsonb(new) ->> 'visibility', 'public') <> 'public' then
     return null;
   end if;
+  -- Eight per request, not twenty. text-embeddings-inference defaults --max-client-batch-size
+  -- to 32 but a CPU deployment measured 2026-09-14 ran it at 8, and a request with more
+  -- inputs than that is refused outright -- so nothing would have been embedded and the cron
+  -- would have retried the same refusal every five minutes. Eight is under every provider's
+  -- limit and costs nothing: the nudge and the cron loop until nothing is waiting.
   perform net.http_post(
-    url := 'http://functions:9000/embed?batch=20',
+    url := 'http://functions:9000/embed?batch=8',
     headers := '{"Content-Type":"application/json"}'::jsonb,
     timeout_milliseconds := 60000);
   return null;

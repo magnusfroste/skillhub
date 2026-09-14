@@ -1,0 +1,823 @@
+-- The tool surface: SQL functions in public that the `skillhub` MCP server exposes as tools.
+-- Run AFTER demo/platform_entry.sql.
+--
+-- Why wrappers in public: PostgREST only exposes the schemas in PGRST_DB_SCHEMAS (public,
+-- storage, graphql_public). The edge function therefore calls RPC in public, which reads
+-- from platform. One extra layer, but no compose changes and no external dependency in the
+-- function.
+--
+-- The agent identity does NOT come from the call but from the gateway: key-auth sets
+-- X-Consumer-Username on the way up, so agent_NN tied to the key. The edge function passes
+-- it in as `agent`. That is the difference from execute_sql, where owner is whatever the
+-- agent claims -- demonstrated 2026-09-11, when one agent wrote a row the change log
+-- attributes to another.
+
+-- ---------------------------------------------------------------------------
+-- Reading tools
+-- ---------------------------------------------------------------------------
+
+-- The entrance board. Ran in every single session measured on 2026-09-11, on every agent,
+-- without anyone naming it -- which makes its output the one instruction channel that
+-- reaches every machine and can still be changed centrally afterwards. So it answers who
+-- else is here before it answers anything about tables: an agent that does not know it
+-- shares the store cannot reason about duplicating someone's work.
+create or replace function public.skillhub_overview() returns jsonb
+language sql stable security definer set search_path = public, platform as $$
+  select jsonb_build_object(
+    'read_this_first', jsonb_build_array(
+      'Run skillhub_rules before you write anything.',
+      'Run skillhub_search before you ANSWER a question from this data, not only before you create something. Someone may have written down how it has to be read, and reading it wrong gives a confident wrong number rather than an error.',
+      'Read whole objects with skillhub_read rather than working from an excerpt.'),
+    'numbers', (select jsonb_object_agg(label, value) from platform.overview()),
+    'who_is_here', (select coalesce(jsonb_agg(jsonb_build_object('agent', id, 'name', name,
+                      'role', role) order by id), '[]'::jsonb)
+                    from public.agents where active),
+    'tables', (select jsonb_agg(jsonb_build_object('table', table_name, 'rows', rows,
+                 'comment', description, 'follows_convention', follows_convention))
+               from platform.v_catalog),
+    'sources', (select coalesce(jsonb_agg(jsonb_build_object('table', table_name,
+                  'system', source_system, 'rows', row_count, 'loaded', last_loaded)), '[]'::jsonb)
+                from platform.v_sources),
+    'backlog', (select count(*) from platform.v_action_items),
+    'stale', (select count(*) from platform.v_going_stale));
+$$;
+
+-- Passes the verified agent through to platform.search so private rows stay private, and
+-- records that a search happened -- the gate on publishing needs to know. SECURITY DEFINER
+-- because tool_log is not writable by the roles the gateway arrives as.
+create or replace function public.skillhub_search(query text, max_hits int default 10, agent text default null)
+returns jsonb language plpgsql security definer set search_path = public, platform as $$
+declare j jsonb;
+begin
+  if agent is not null and agent <> '' then
+    perform platform.note_search(agent, 'search', query);
+  end if;
+  select coalesce(jsonb_agg(jsonb_build_object('kind', source, 'id', id, 'title', title,
+           'excerpt', excerpt) order by rank desc), '[]'::jsonb) into j
+  from platform.search(query, max_hits, agent);
+  return j;
+end $$;;
+
+create or replace function public.skillhub_rules() returns jsonb
+language sql stable security definer set search_path = public, platform as $$
+  select jsonb_build_object(
+    'placement_rule', platform.placement_rule(),
+    'conventions_skill', 'store-conventions',
+    'house_standards', (select coalesce(jsonb_agg(jsonb_build_object('slug', slug, 'name', name,
+                          'description', description)), '[]'::jsonb)
+                        from public.skill_library
+                        where 'house-standard' = any(tags) and status = 'published'),
+    'caveats', (select jsonb_agg(caveat) from platform.v_caveats));
+$$;
+
+-- One tool for fetching any object in full. Whole objects, never fragments: search tells
+-- the agent WHICH object, this returns ALL of it, so nothing is answered from a chunk
+-- without its context.
+--
+-- Filters on ownership. Before 2026-09-11 this returned `visibility` as a column and
+-- filtered on nothing, so another agent's private note came back in clear text.
+create or replace function public.skillhub_read(kind text, id text, agent text default null)
+returns jsonb language plpgsql stable security definer set search_path = public, platform as $$
+declare j jsonb;
+begin
+  if kind = 'skill' then
+    select to_jsonb(x) into j from (
+      select 'skill' as kind, s.slug as id, s.name, s.description, s.version, s.author_name as author,
+             s.status, s.tags, s.skill_md as content, s.verified_at, s.superseded_by,
+             s.updated_at::timestamp(0) as updated
+      from public.skill_library s
+      where s.slug = skillhub_read.id
+        and (s.visibility = 'public' or s.author_name = skillhub_read.agent)
+      -- Newest version, by number and not by luck. Measured 2026-09-12: with two versions
+      -- present this returned whichever row came first physically, so publishing an
+      -- improvement left every colleague reading the old text, silently. Sorting on the
+      -- string would put 1.10.0 before 1.9.0, hence the array of integers.
+      order by string_to_array(s.version,'.')::int[] desc
+      limit 1) x;
+  elsif kind = 'note' then
+    select to_jsonb(x) into j from (
+      select 'note' as kind, n.id::text, n.title, n.content, n.tags,
+             n.owner, n.visibility, n.updated_at::timestamp(0) as updated
+      from public.notes n
+      where n.id::text = skillhub_read.id
+        and (n.visibility = 'public' or n.owner = skillhub_read.agent)) x;
+  elsif kind = 'document' then
+    select to_jsonb(x) into j from (
+      select 'document' as kind, d.id::text, d.filename, d.description,
+             d.mime_type, d.bytes, d.sha256, d.bucket, d.path,
+             d.source, (d.path is null) as content_missing, d.owner
+      from public.documents d
+      where d.id::text = skillhub_read.id
+        and (d.visibility = 'public' or d.owner = skillhub_read.agent)) x;
+  elsif kind = 'table' then
+    select jsonb_build_object(
+      'kind', 'table', 'id', skillhub_read.id,
+      'comment', obj_description(('public.'||skillhub_read.id)::regclass),
+      'rows', platform.row_estimate(skillhub_read.id),
+      'columns', (select jsonb_agg(jsonb_build_object('name', a.attname,
+                    'type', format_type(a.atttypid, a.atttypmod),
+                    'comment', col_description(a.attrelid, a.attnum)) order by a.attnum)
+                  from pg_attribute a
+                  where a.attrelid = ('public.'||skillhub_read.id)::regclass
+                    and a.attnum > 0 and not a.attisdropped))
+      into j;
+  else
+    return jsonb_build_object('error', format('Unknown kind "%s". Use skill, note, document or table.', kind));
+  end if;
+  -- Someone else's private object answers exactly like a missing one. Saying "forbidden"
+  -- would confirm that it exists, which is half of what was leaking.
+  return coalesce(j, jsonb_build_object('error', format('No %s with id %s', kind, skillhub_read.id)));
+exception when others then
+  return jsonb_build_object('error', sqlerrm);
+end $$;
+
+-- Needs no ownership filter: nothing private is ever embedded, so the index holds only
+-- public objects. See embed_candidates.
+create or replace function public.skillhub_similar(query_vector jsonb, model text, max_hits int default 5)
+returns jsonb language plpgsql stable security definer set search_path = public, platform as $$
+declare v vector; j jsonb;
+begin
+  v := (query_vector #>> '{}')::vector;
+  select coalesce(jsonb_agg(x), '[]'::jsonb) into j from (
+    select e.source as kind, e.id, round((1 - (e.vector <=> v))::numeric, 4) as similarity,
+           case e.source
+             when 'skill' then (select s.name from public.skill_library s where s.slug = e.id)
+             when 'note' then (select n.title from public.notes n where n.id::text = e.id)
+             when 'document' then (select d.filename from public.documents d where d.id::text = e.id)
+             when 'schema' then e.id
+           end as title,
+           -- For a schema hit the comment IS the answer, so it travels with the result. A
+           -- pointer would send the agent looking for a reader that does not exist:
+           -- skillhub_read handles skill, note, document and table, not a single column.
+           case when e.source = 'schema' then
+             case when position('.' in e.id) > 0
+                  then col_description(('public.'||split_part(e.id,'.',1))::regclass,
+                         (select a.attnum from pg_attribute a
+                           where a.attrelid = ('public.'||split_part(e.id,'.',1))::regclass
+                             and a.attname = split_part(e.id,'.',2)))
+                  else obj_description(('public.'||e.id)::regclass)
+             end
+           end as comment
+    from platform.embeddings e
+    where e.model = skillhub_similar.model
+    order by e.vector <=> v
+    limit max_hits) x;
+  return j;
+end $$;
+
+-- plpgsql, not sql: a SQL function does not allow a parameter in LIMIT.
+create or replace function public.skillhub_activity(max_rows int default 20) returns jsonb
+language plpgsql stable security definer set search_path = public, platform as $$
+declare j jsonb;
+begin
+  select coalesce(jsonb_agg(jsonb_build_object('from', from_at, 'agent', agent, 'operation', operation,
+           'table', table_name, 'count', n, 'what', what)), '[]'::jsonb) into j
+  from (select from_at, agent, operation, table_name, rows as n, what
+        from platform.v_flow limit max_rows) x;
+  return j;
+end $$;
+
+create or replace function public.skillhub_report(days int default 1) returns text
+language sql stable security definer set search_path = public, platform as $$
+  select platform.daily_report(days);
+$$;
+
+create or replace function public.skillhub_whoami(agent text) returns jsonb
+language sql stable security definer set search_path = public, platform as $$
+  select jsonb_build_object(
+    'agent', agent,
+    'source', 'Verified by the gateway from your API key, not from what you claimed.',
+    'registered', coalesce((select jsonb_build_object('name', name, 'role', role)
+                            from public.agents where id = agent), '{}'::jsonb),
+    'your_writes', (select coalesce(jsonb_object_agg(table_name, n), '{}'::jsonb)
+                    from (select table_name, count(*) n from platform.events
+                          where platform.events.agent = skillhub_whoami.agent group by table_name) x));
+$$;
+
+-- ---------------------------------------------------------------------------
+-- Writing tools. Identity is a parameter the edge function fills from the gateway's
+-- verified header, never something the agent states -- these fail closed without it.
+-- ---------------------------------------------------------------------------
+create or replace function public.skillhub_write_note(
+  agent text, title text, content text,
+  tags text[] default '{}', private boolean default false) returns jsonb
+language plpgsql security definer set search_path = public, platform as $$
+declare new_id uuid;
+begin
+  if agent is null or agent = '' then raise exception 'No agent identity from the gateway.'; end if;
+  if title is null or btrim(title) = '' then raise exception 'Title is required.'; end if;
+  insert into public.notes (owner, created_by, updated_by, title, content, tags, visibility)
+  values (agent, agent, agent, btrim(title), coalesce(content,''), coalesce(tags,'{}'),
+          case when private then 'private' else 'public' end)
+  returning id into new_id;
+  return jsonb_build_object('id', new_id, 'title', btrim(title), 'owner', agent,
+    'visibility', case when private then 'private' else 'public' end,
+    'note', case when private then 'Private notes are never indexed, so nobody can find this by meaning -- including you.' else null end);
+end $$;
+
+create or replace function public.skillhub_publish_skill(
+  agent text, slug text, name text, content text,
+  description text default '', tags text[] default '{}', version text default '1.0.0') returns jsonb
+language plpgsql security definer set search_path = public, platform as $$
+declare
+  existing_author text;
+  newest text;
+begin
+  if agent is null or agent = '' then raise exception 'No agent identity from the gateway.'; end if;
+  if slug !~ '^[a-z0-9][a-z0-9-]{2,}$' then
+    raise exception 'Invalid slug "%". Lowercase letters, digits and hyphens, at least three characters.', slug;
+  end if;
+  if version !~ '^[0-9]+\.[0-9]+\.[0-9]+$' then
+    raise exception 'Invalid version "%". Use three numbers, e.g. 1.0.0 or 2.1.0.', version;
+  end if;
+  if length(coalesce(content,'')) < 200 then
+    raise exception 'The content is % characters. A skill under 200 characters helps nobody -- describe the procedure.', length(coalesce(content,''));
+  end if;
+
+  -- The gate's second half: you cannot add to the library without having looked at it. The
+  -- whole reason the library exists is that the next person inherits what the last one
+  -- learned, and on 2026-09-12 two agents produced the identical wrong number while the
+  -- answer sat in the store, because nothing made either of them look. This is the one
+  -- moment where looking can be required in code rather than requested in a prompt.
+  if not platform.searched_recently(agent) then
+    raise exception using
+      errcode = 'insufficient_privilege',
+      message = format(
+        'Search the library before adding to it. Run skillhub_search for %L -- or for whatever this skill is about -- and read what comes back. '
+        'If something covers it already, improve that instead of publishing a second version of the same thing; if nothing does, publish and this will let you through. '
+        'A duplicate is what makes a shared library unusable, and the check looks back fifteen minutes.',
+        slug);
+  end if;
+
+  -- The gate. A colleague's skill may be IMPROVED but never overwritten: publishing over
+  -- someone else's slug at the same version is refused, and the refusal says what to do
+  -- instead, because it is the only field that survives the MCP wrapper.
+  --
+  -- Measured 2026-09-12 before this existed: agent_03 published over another agent's slug,
+  -- got back "updated", renamed the skill, and the byline still credited the original
+  -- author. The colleague would have been blamed for text they never wrote.
+  select s.author_name into existing_author
+    from public.skill_library s
+   where s.slug = skillhub_publish_skill.slug and s.version = skillhub_publish_skill.version;
+
+  if existing_author is not null and existing_author <> agent then
+    select max(s.version) into newest from public.skill_library s where s.slug = skillhub_publish_skill.slug;
+    raise exception using
+      errcode = 'insufficient_privilege',
+      message = format(
+        'Version %s of "%s" belongs to %s, and you are %s -- publishing over it would leave their name on your text. '
+        'Publish an improvement as a NEW version instead: the highest version now is %s, so use the next one up. '
+        'The old version is then marked as superseded by yours and readers get yours. '
+        'Read what is there first with skillhub_read.',
+        version, slug, existing_author, agent, newest);
+  end if;
+
+  insert into public.skill_library (slug, name, description, skill_md, version, author_name, tags, visibility, status)
+  values (slug, name, coalesce(description,''), content, version, agent, coalesce(tags,'{}'), 'public', 'published')
+  -- ON CONSTRAINT, not (slug, version): the column list resolves against both the table and
+  -- this function's parameters, which are called slug and version, and Postgres refuses with
+  -- "column reference is ambiguous". This made the tool fail on every call it ever received,
+  -- unnoticed, because agents published with raw SQL instead.
+  on conflict on constraint skill_library_slug_version_key do update
+    set name = excluded.name, description = excluded.description, skill_md = excluded.skill_md,
+        tags = excluded.tags, updated_at = now();
+
+  -- Every older version of the slug now points at this one, so a reader who follows a link
+  -- from last month's note lands on the current text instead of a dead end.
+  update public.skill_library s
+     set superseded_by = skillhub_publish_skill.version, updated_at = now()
+   where s.slug = skillhub_publish_skill.slug
+     and string_to_array(s.version,'.')::int[] < string_to_array(skillhub_publish_skill.version,'.')::int[]
+     and coalesce(s.superseded_by,'') <> skillhub_publish_skill.version;
+
+  return jsonb_build_object('slug', slug, 'version', version, 'author', agent,
+    'action', case when existing_author = agent then 'updated' else 'published' end,
+    'superseded', (select count(*) from public.skill_library s
+                    where s.slug = skillhub_publish_skill.slug
+                      and s.superseded_by = skillhub_publish_skill.version),
+    'hint', 'Confirm a skill you followed with public.confirm_skill, and retire instead of deleting.');
+end $$;
+
+create or replace function public.skillhub_register_document(
+  agent text, filename text, bytes bigint default null, mime_type text default null,
+  sha256 text default null, description text default null, source text default null) returns jsonb
+language plpgsql security definer set search_path = public, platform as $$
+declare new_id uuid; duplicate text; step text;
+begin
+  if agent is null or agent = '' then raise exception 'No agent identity from the gateway.'; end if;
+  -- Every reference to a parameter that shares a column name is qualified with the function
+  -- name. This is the fourth place today where an unqualified one made a tool fail on every
+  -- call it ever received -- publish_skill, retire, request_structure, and this. The smoke test
+  -- in utils/smoke-test-tools.sh exists because integration is the only thing that finds them.
+  select d.filename into duplicate from public.documents d
+   where skillhub_register_document.sha256 is not null
+     and d.sha256 = skillhub_register_document.sha256 limit 1;
+  insert into public.documents (owner, created_by, updated_by, filename, bytes, mime_type, sha256, description, source)
+  values (agent, agent, agent, filename, bytes, mime_type, sha256, description, source)
+  returning id into new_id;
+  -- The next_step string is the whole of what the agent hears, so it decides what happens
+  -- next. Measured 2026-09-13: the previous wording said the file "must be uploaded to
+  -- Storage by a person", and agent_02 stopped there -- twice, including when the user said
+  -- outright that they could not upload it and that the point was for colleagues to get
+  -- answers from the manual. The second time it went further and claimed that uploading
+  -- would make content_missing disappear and the document searchable. Nothing here does
+  -- that; no step in this store reads inside a file. So the message was both a dead end and
+  -- false, and the agent had write_note, publish_skill and request_structure the entire
+  -- time. A success message that ends the work is as costly as a refusal that does not say
+  -- what to do instead.
+  step := 'The catalogue now holds the name, the size and the hash. It does not hold what the file '
+       || 'says, and nothing in this store reads inside a file -- uploading the bytes would not change '
+       || 'that. So if colleagues are to get answers FROM this document, put the content in yourself, '
+       || 'with the tools you already have: publish each part that carries a rule, a procedure or a '
+       || 'checklist as a skill, naming this document and its revision as the source; write shorter '
+       || 'observations as public notes; and use skillhub_request_structure when the content is a long '
+       || 'list of similar items, such as clauses or requirements, that people will want to filter. '
+       || 'Until the content is in, do not answer questions about it from the filename.';
+  if duplicate is not null then
+    step := 'A file with the same sha256 is already registered as ' || duplicate
+         || '. Check whether it is the same revision before putting the same content in twice. ' || step;
+  end if;
+  return jsonb_build_object('id', new_id, 'filename', filename, 'content_missing', true,
+    'next_step', step, 'duplicate_of', duplicate);
+end $$;
+
+-- skillhub_query: aggregation through the door.
+--
+-- Why this takes no SQL text. Raw SQL inside a SECURITY DEFINER function is the same escape
+-- hatch measured on 2026-09-12 for the scratch zone: EXECUTE accepts multiple statements, and
+-- the function runs as its owner, so a caller who closes a parenthesis reaches a superuser.
+-- Validating SQL text with pattern matching is a losing game -- CTEs, function side effects,
+-- statement chaining. So the agent never sends SQL. It says what it wants, every identifier
+-- is checked against the real catalogue, every value is quoted as a literal, and this function
+-- writes the statement.
+--
+-- Three things it guarantees that raw SQL could not:
+--   * the ownership filter is applied, not requested
+--   * there is a row cap and a statement timeout
+--   * the statement that ran is returned, so the agent and the log see the same thing
+create or replace function public.skillhub_query(
+  agent       text,
+  table_name  text,
+  columns     text[] default null,          -- 'status', 'count(*)', 'sum(defect_count)'
+  filters     jsonb  default '[]'::jsonb,   -- [["status","=","Completed"],["defect_count","not in",[999999,333]]]
+  group_by    text[] default null,
+  order_by    text   default null,          -- 'count desc', 'status', 'period'
+  row_limit   int    default 100,
+  bucket      jsonb  default null           -- {"column":"reg_date","unit":"month"}
+) returns jsonb
+-- Volatile, not stable: `set local statement_timeout` is refused in a non-volatile
+-- function, and a query tool that can hold a connection open is worse than one that
+-- cannot be inlined.
+language plpgsql security definer set search_path = public, platform as $$
+declare
+  rel        regclass;
+  cols       text[] := '{}';
+  wheres     text[] := '{}';
+  groups     text[] := '{}';
+  f          jsonb;
+  col        text;
+  op         text;
+  val        jsonb;
+  expr       text;
+  agg        text;
+  inner_col  text;
+  cap        int := least(greatest(coalesce(row_limit, 100), 1), 1000);
+  sql        text;
+  result     jsonb;
+  has_owner  boolean;
+  ord        text := '';
+
+  ok_ops       constant text[] := array['=','<>','!=','<','<=','>','>=','in','not in','like','ilike','is null','is not null'];
+  ok_units     constant text[] := array['day','week','month','quarter','year'];
+  b_col        text;
+  b_unit       text;
+  right_col    text;
+begin
+  if agent is null or agent = '' then
+    raise exception 'No agent identity from the gateway.';
+  end if;
+
+  -- The table must exist in public and be a table or a view. Nothing reaches pg_catalog,
+  -- platform, auth or storage through here.
+  select c.oid into rel
+    from pg_class c join pg_namespace n on n.oid = c.relnamespace
+   where n.nspname = 'public' and c.relname = table_name and c.relkind in ('r','v');
+  if rel is null then
+    raise exception using errcode = 'undefined_table',
+      message = format('No table or view "%s" in public. Run skillhub_overview to see what exists, and skillhub_read with kind=table for its columns.', table_name);
+  end if;
+
+  select exists (select 1 from pg_attribute a
+                  where a.attrelid = rel and a.attname = 'owner' and a.attnum > 0 and not a.attisdropped)
+    into has_owner;
+
+  -- Time buckets. "How has quality developed per month" is one of the two questions a
+  -- quality register exists to answer, and it was unanswerable: date_trunc is an expression
+  -- and this tool refuses expressions on purpose, because accepting them turns it into a SQL
+  -- dialect with a boundary nobody can hold. A bucket is not an expression though -- it is a
+  -- DIMENSION, like a column, with a unit from a closed list. That line is the one worth
+  -- keeping: dimensions and comparisons yes, computations never.
+  if bucket is not null and bucket <> 'null'::jsonb then
+    b_col  := lower(btrim(coalesce(bucket->>'column','')));
+    b_unit := lower(btrim(coalesce(bucket->>'unit','month')));
+    if not (b_unit = any(ok_units)) then
+      raise exception using errcode = 'syntax_error',
+        message = format('Bucket unit "%s" is not allowed. Use one of: %s.', b_unit, array_to_string(ok_units, ', '));
+    end if;
+    if not exists (select 1 from pg_attribute a where a.attrelid = rel and a.attname = b_col
+                     and a.attnum > 0 and not a.attisdropped) then
+      raise exception using errcode = 'undefined_column',
+        message = format('Cannot bucket by "%s": no such column in %s. It has to be a date or timestamp column.', coalesce(bucket->>'column','(none)'), table_name);
+    end if;
+    cols   := cols   || format('date_trunc(%L, %I)::date::text as period', b_unit, b_col)::text;
+    groups := groups || format('date_trunc(%L, %I)', b_unit, b_col)::text;
+    if order_by is null or btrim(order_by) = '' then order_by := 'period'; end if;
+  end if;
+
+  -- Columns. Either a bare column, or one whitelisted aggregate over a column, or count(*).
+  if columns is null or cardinality(columns) = 0 then
+    columns := array['count(*)'];
+  end if;
+  foreach expr in array columns loop
+    expr := btrim(expr);
+    if lower(expr) = 'count(*)' then
+      cols := cols || 'count(*)::text as count'::text;
+    elsif expr ~* '^(count|sum|avg|min|max)\s*\(\s*[a-z_][a-z0-9_]*\s*\)$' then
+      agg := lower(regexp_replace(expr, '^\s*([a-z]+).*$', '\1', 'i'));
+      inner_col := lower(regexp_replace(expr, '^[a-z]+\s*\(\s*([a-z_][a-z0-9_]*)\s*\)$', '\1', 'i'));
+      if not exists (select 1 from pg_attribute a where a.attrelid = rel and a.attname = inner_col and a.attnum > 0 and not a.attisdropped) then
+        raise exception using errcode = 'undefined_column',
+          message = format('No column "%s" in %s. Run skillhub_read with kind=table and id=%s to see the columns and their comments -- the comments say how the data has to be read.', inner_col, table_name, table_name);
+      end if;
+      cols := cols || format('%s(%I)::text as %s', agg, inner_col, agg)::text;
+    elsif expr ~* '^[a-z_][a-z0-9_]*$' then
+      if not exists (select 1 from pg_attribute a where a.attrelid = rel and a.attname = lower(expr) and a.attnum > 0 and not a.attisdropped) then
+        raise exception using errcode = 'undefined_column',
+          message = format('No column "%s" in %s. Run skillhub_read with kind=table and id=%s for the column list.', expr, table_name, table_name);
+      end if;
+      cols := cols || format('%I::text', lower(expr))::text;
+    else
+      raise exception using errcode = 'syntax_error',
+        message = format('Cannot use "%s". A column takes one of three shapes: a column name, count(*), or count/sum/avg/min/max of one column. This tool builds the SQL for you -- it does not accept SQL.', expr);
+    end if;
+  end loop;
+
+  -- Filters. [column, operator, value]. Values are quoted as literals, never interpolated raw.
+  for f in select * from jsonb_array_elements(coalesce(filters, '[]'::jsonb)) loop
+    col := lower(btrim(f->>0));
+    op  := lower(btrim(f->>1));
+    val := f->2;
+    if col !~ '^[a-z_][a-z0-9_]*$'
+       or not exists (select 1 from pg_attribute a where a.attrelid = rel and a.attname = col and a.attnum > 0 and not a.attisdropped) then
+      raise exception using errcode = 'undefined_column',
+        message = format('No column "%s" in %s to filter on.', f->>0, table_name);
+    end if;
+    if not (op = any(ok_ops)) then
+      raise exception using errcode = 'syntax_error',
+        message = format('Operator "%s" is not allowed. Use one of: %s.', op, array_to_string(ok_ops, ', '));
+    end if;
+    if op in ('is null','is not null') then
+      wheres := wheres || (format('%I %s', col, op))::text;
+    elsif op in ('in','not in') then
+      if val is null or jsonb_typeof(val) <> 'array' then
+        raise exception 'The operator "%s" needs a list of values, e.g. [999999, 333].', op;
+      end if;
+      wheres := wheres || (format('%I %s (%s)', col, op,
+        (select string_agg(quote_nullable(v #>> '{}'), ', ') from jsonb_array_elements(val) v)))::text;
+    elsif jsonb_typeof(val) = 'object' and val ? 'column' then
+      -- Comparing two columns. "How many are overdue" is the other question the register
+      -- exists for, and it needs closed_date against planned_ready_date. An object rather
+      -- than a bare string, so a value that happens to match a column name is still a value:
+      -- {"column":"planned_ready_date"} says what it means and nothing else can be mistaken
+      -- for it. Before this, passing the column name as a literal produced "invalid input
+      -- syntax for type date" -- a message that leaked the implementation instead of teaching.
+      right_col := lower(btrim(val->>'column'));
+      if not exists (select 1 from pg_attribute a where a.attrelid = rel and a.attname = right_col
+                       and a.attnum > 0 and not a.attisdropped) then
+        raise exception using errcode = 'undefined_column',
+          message = format('No column "%s" in %s to compare against.', val->>'column', table_name);
+      end if;
+      wheres := wheres || (format('%I %s %I', col, op, right_col))::text;
+    else
+      wheres := wheres || (format('%I %s %s', col, op, quote_nullable(val #>> '{}')))::text;
+    end if;
+  end loop;
+
+  -- The ownership filter is applied, not requested. This is the difference from raw SQL:
+  -- an agent cannot forget it, and cannot choose to leave it out.
+  if has_owner then
+    wheres := wheres || format('(visibility = %L or owner = %L)', 'public', agent)::text;
+  end if;
+
+  foreach col in array coalesce(group_by, '{}') loop
+    col := lower(btrim(col));
+    if not exists (select 1 from pg_attribute a where a.attrelid = rel and a.attname = col and a.attnum > 0 and not a.attisdropped) then
+      raise exception using errcode = 'undefined_column',
+        message = format('Cannot group by "%s": no such column in %s.', col, table_name);
+    end if;
+    groups := groups || format('%I', col)::text;
+  end loop;
+
+  if order_by is not null and btrim(order_by) <> '' then
+    -- 'period' is the alias the bucket produces; everything else must be a real name.
+    if order_by !~* '^[a-z_][a-z0-9_]*(\s+(asc|desc))?$' then
+      raise exception using errcode = 'syntax_error',
+        message = 'order_by takes one column or aggregate name, optionally followed by asc or desc. Example: "count desc".';
+    end if;
+    ord := ' order by ' || lower(btrim(order_by));
+  end if;
+
+  sql := format('select %s from public.%I%s%s%s limit %s',
+           array_to_string(cols, ', '),
+           table_name,
+           case when cardinality(wheres) > 0 then ' where ' || array_to_string(wheres, ' and ') else '' end,
+           case when cardinality(groups) > 0 then ' group by ' || array_to_string(groups, ', ') else '' end,
+           ord, cap);
+
+  -- A runaway aggregate is a bug, not a reason to hold the connection.
+  set local statement_timeout = '20s';
+  execute format('select coalesce(jsonb_agg(t), %L::jsonb) from (%s) t', '[]', sql) into result;
+
+  return jsonb_build_object(
+    'rows', result,
+    'row_count', jsonb_array_length(result),
+    'capped_at', case when jsonb_array_length(result) >= cap then cap else null end,
+    'sql', sql,
+    'note', 'Read-only, row-capped, and the ownership filter is applied for you. Per period: pass bucket, e.g. {"column":"reg_date","unit":"month"}. To compare two columns, give the value as {"column":"other_column"}. If a column''s comment says values must be excluded, pass that as a filter -- skillhub_read with kind=table shows the comments.');
+end $$;
+
+comment on function public.skillhub_query(text,text,text[],jsonb,text[],text,int,jsonb) is
+  'Aggregation over one table in public, built from validated parts rather than from SQL text. Read-only, capped, ownership filter applied.';
+
+revoke all on function public.skillhub_query(text,text,text[],jsonb,text[],text,int,jsonb) from public;
+grant execute on function public.skillhub_query(text,text,text[],jsonb,text[],text,int,jsonb) to service_role, postgres;
+
+-- skillhub_add_rows: fill in a structure somebody else defined.
+--
+-- The gap this closes, in the words that found it: in SharePoint you do not create new file
+-- TYPES, you create new files of existing types, and you fill in lists somebody else defined.
+-- Agents could write notes, publish skills and register documents, but if the caretaker made
+-- a `suppliers` table nobody could add a supplier. The structure existed and was unusable.
+--
+-- Built the same way as skillhub_query and for the same reason: the agent sends no SQL. It
+-- names a table and gives rows as objects; every column name is checked against the real
+-- catalogue and every value goes through quote_nullable.
+--
+-- What the agent cannot set, ever: owner, created_by and updated_by come from the gateway.
+-- That is the whole difference from the raw SQL door that closed today -- there, an agent
+-- named its own owner and the change log believed it.
+create or replace function public.skillhub_add_rows(
+  agent      text,
+  table_name text,
+  rows       jsonb,
+  visibility text default 'public'
+) returns jsonb
+language plpgsql security definer set search_path = public, platform as $$
+declare
+  rel        regclass;
+  managed    constant text[] := array['id','owner','visibility','created_by','updated_by',
+                                      'created_at','updated_at','retired_at','retired_by','retired_reason'];
+  cap        constant int := 500;
+  n_rows     int;
+  first_keys text[];
+  keys       text[];
+  col        text;
+  r          jsonb;
+  vals       text[];
+  tuples     text[] := '{}';
+  sql        text;
+  inserted   int;
+begin
+  if agent is null or agent = '' then raise exception 'No agent identity from the gateway.'; end if;
+  if visibility not in ('public','private') then
+    raise exception 'visibility must be public or private, not %.', visibility;
+  end if;
+  if rows is null or jsonb_typeof(rows) <> 'array' or jsonb_array_length(rows) = 0 then
+    raise exception 'Give rows as a list of objects, e.g. [{"name":"ACME","city":"Malmo"}].';
+  end if;
+  n_rows := jsonb_array_length(rows);
+  if n_rows > cap then
+    raise exception using errcode = 'program_limit_exceeded',
+      message = format('%s rows at once, and the limit is %s. Split it, or ask the caretaker -- a load of this size is what the admin key is for, and it registers a delivery so people can see where the data came from.', n_rows, cap);
+  end if;
+
+  -- The table has to exist, be a table, follow the convention and be logged. A table without
+  -- the change log would make these rows untraceable, which is the thing that was closed today.
+  select c.oid into rel
+    from pg_class c join pg_namespace n on n.oid = c.relnamespace
+   where n.nspname = 'public' and c.relname = table_name and c.relkind = 'r';
+  if rel is null then
+    raise exception using errcode = 'undefined_table',
+      message = format('No table "%s" in public. skillhub_overview lists what exists. Creating a new structure is the caretaker''s job -- describe what you need and ask for it.', table_name);
+  end if;
+  if (select count(*) from pg_attribute a
+       where a.attrelid = rel and a.attnum > 0 and not a.attisdropped
+         and a.attname in ('owner','visibility','created_by','updated_by')) <> 4 then
+    raise exception using errcode = 'invalid_table_definition',
+      message = format('%s does not carry the convention columns, so a row added here could not be attributed to you. Ask the caretaker whether this table is meant to take rows from agents at all -- some are deliberately not, and public.agents is one of them: the registry records who holds which key and is written where the key is handed over. Adding the convention columns to a table like that is how the check gets removed by someone trying to be helpful.', table_name);
+  end if;
+  if not exists (select 1 from pg_trigger t where t.tgrelid = rel and t.tgname = 'platform_log_change') then
+    raise exception using errcode = 'invalid_table_definition',
+      message = format('%s has no change log, so rows added here would be invisible in the flow view. Ask the caretaker to run platform.attach_change_log(''%s'').', table_name, table_name);
+  end if;
+
+  -- Every row has to describe the same columns. The forgiving alternative -- filling the gaps
+  -- with null -- turns one mistyped key into a silently empty column, and a store that lies
+  -- quietly is the failure mode this whole design is built against.
+  select array_agg(k order by k) into first_keys from jsonb_object_keys(rows->0) k;
+  if first_keys is null then raise exception 'The first row has no fields.'; end if;
+
+  foreach col in array first_keys loop
+    if col = any(managed) then
+      raise exception using errcode = 'insufficient_privilege',
+        message = format('You cannot set "%s" -- ownership and timestamps come from the gateway, not from you. Leave it out. Use the visibility argument if the rows should be private.', col);
+    end if;
+    if col !~ '^[a-z_][a-z0-9_]*$'
+       or not exists (select 1 from pg_attribute a where a.attrelid = rel and a.attname = col
+                        and a.attnum > 0 and not a.attisdropped) then
+      raise exception using errcode = 'undefined_column',
+        message = format('No column "%s" in %s. Run skillhub_read with kind=table and id=%s for the columns and their comments.', col, table_name, table_name);
+    end if;
+  end loop;
+
+  for r in select * from jsonb_array_elements(rows) loop
+    select array_agg(k order by k) into keys from jsonb_object_keys(r) k;
+    if keys is distinct from first_keys then
+      raise exception using errcode = 'invalid_parameter_value',
+        message = format('Every row must describe the same columns. The first row has [%s] and another has [%s]. A missing key would become an empty column without anyone noticing.',
+          array_to_string(first_keys, ', '), array_to_string(coalesce(keys,'{}'), ', '));
+    end if;
+    vals := '{}';
+    foreach col in array first_keys loop
+      vals := vals || quote_nullable(r ->> col)::text;
+    end loop;
+    tuples := tuples || format('(%s, %L, %L, %L, %L)',
+      array_to_string(vals, ', '), agent, visibility, agent, agent)::text;
+  end loop;
+
+  sql := format('insert into public.%I (%s, owner, visibility, created_by, updated_by) values %s returning id',
+           table_name,
+           (select string_agg(quote_ident(k), ', ') from unnest(first_keys) k),
+           array_to_string(tuples, ', '));
+
+  execute format('with ins as (%s) select count(*) from ins', sql) into inserted;
+
+  return jsonb_build_object(
+    'table', table_name, 'inserted', inserted, 'owner', agent, 'visibility', visibility,
+    'columns', first_keys,
+    'note', 'Ownership and timestamps were set from your key, not from the rows. Every one of these appears in the flow view under your name.');
+end $$;
+
+comment on function public.skillhub_add_rows(text,text,jsonb,text) is
+  'Add rows to an existing shared table. Columns validated against the catalogue, values quoted, ownership taken from the gateway. Creating a table is the caretaker''s job.';
+
+revoke all on function public.skillhub_add_rows(text,text,jsonb,text) from public;
+grant execute on function public.skillhub_add_rows(text,text,jsonb,text) to service_role, postgres;
+
+create or replace function public.skillhub_request_structure(
+  agent          text,
+  purpose        text,
+  fields         jsonb,
+  sample_rows    jsonb default null,
+  suggested_name text default null
+) returns jsonb
+language plpgsql security definer set search_path = public, platform as $$
+declare
+  near_tables jsonb;
+  near_open   jsonb;
+  new_id      bigint;
+  n_samples   int := coalesce(jsonb_array_length(coalesce(sample_rows,'[]'::jsonb)), 0);
+begin
+  if agent is null or agent = '' then raise exception 'No agent identity from the gateway.'; end if;
+  if skillhub_request_structure.purpose is null or length(btrim(skillhub_request_structure.purpose)) < 20 then
+    raise exception 'Say what the data is for, in a sentence. The caretaker decides between a column and a new table on the purpose, not on the field names.';
+  end if;
+  if fields is null or jsonb_typeof(fields) <> 'array' or jsonb_array_length(fields) = 0 then
+    raise exception 'Give the fields as a list, e.g. ["supplier","audit_date","score","deviations","status","auditor"].';
+  end if;
+  if n_samples > 200 then
+    raise exception 'Attach at most 200 sample rows. More than that is a delivery: hand the file to the caretaker and follow the load-from-source-system skill.';
+  end if;
+
+  -- What already exists, and what somebody already asked for. Returned to the agent rather than
+  -- used to refuse: the agent knows its own case better than a similarity score does.
+  select coalesce(jsonb_agg(jsonb_build_object('table', c.table_name, 'rows', c.rows,
+           'description', left(coalesce(c.description,''), 140))), '[]'::jsonb)
+    into near_tables
+  from platform.v_catalog c
+  where c.follows_convention
+    and (similarity(c.table_name, coalesce(suggested_name, '')) > 0.3
+         or to_tsvector('swedish', coalesce(c.description,'')) @@ websearch_to_tsquery('swedish', replace(btrim(purpose), ' ', ' OR ')));
+
+  select coalesce(jsonb_agg(jsonb_build_object('id', r.id, 'by', r.requested_by,
+           'purpose', left(r.purpose, 140), 'at', r.at::timestamp(0))), '[]'::jsonb)
+    into near_open
+  from platform.structure_requests r
+  where r.status = 'open'
+    -- skillhub_request_structure.purpose, not purpose: this query names the table that has
+    -- a purpose column too, and Postgres refuses an unqualified reference. The third time this
+    -- class of bug appeared in one day, and the second time I wrote it after documenting it.
+    and to_tsvector('swedish', r.purpose) @@ websearch_to_tsquery('swedish', replace(btrim(skillhub_request_structure.purpose), ' ', ' OR '));
+
+  insert into platform.structure_requests (requested_by, purpose, suggested_name, fields, sample_rows)
+  values (agent, btrim(skillhub_request_structure.purpose), suggested_name, fields, sample_rows)
+  returning id into new_id;
+
+  return jsonb_build_object(
+    'request_id', new_id,
+    'requested_by', agent,
+    'sample_rows_kept', n_samples,
+    'existing_tables_worth_checking', near_tables,
+    'other_open_requests_on_this', near_open,
+    'note', case when near_tables = '[]'::jsonb and near_open = '[]'::jsonb
+      then 'Recorded. The caretaker sees it in its daily report and decides whether this is a column on something that exists or a new table. Meanwhile write what you know as a note so the knowledge is not only in this conversation.'
+      else 'Recorded -- but look at existing_tables_worth_checking and other_open_requests_on_this first. If one of them is the same kind of thing, say so to the user: a column on what exists beats a table beside it, and two people asking for the same structure should end up with one.'
+    end);
+end $$;
+
+comment on function public.skillhub_request_structure(text,text,jsonb,jsonb,text) is
+  'Ask for somewhere to put structured data. Returns existing tables and other open requests that look related, so duplication is visible before it happens.';
+
+revoke all on function public.skillhub_request_structure(text,text,jsonb,jsonb,text) from public;
+grant execute on function public.skillhub_request_structure(text,text,jsonb,jsonb,text) to service_role, postgres;
+
+-- Retire something of your own. The counterpart to publishing: an agent that can add but
+-- never remove has to leave its own mistakes standing, and after raw SQL moves behind the
+-- admin key that would be the only option left.
+--
+-- Soft by necessity, not by preference. The change log keeps a breadcrumb and not the row's
+-- contents, so a hard delete here is unrecoverable by anyone -- see platform.v_caveats.
+create or replace function public.skillhub_retire(
+  agent text, kind text, id text, reason text default null, superseded_by text default null) returns jsonb
+language plpgsql security definer set search_path = public, platform as $$
+declare owner_now text; n int;
+begin
+  if agent is null or agent = '' then raise exception 'No agent identity from the gateway.'; end if;
+  if reason is null or btrim(reason) = '' then
+    raise exception 'A reason is required. Whoever finds this next needs to know why it stopped applying.';
+  end if;
+
+  if kind = 'skill' then
+    -- Ownership is per VERSION, not per slug. Checking only the newest version's author was
+    -- wrong in both directions: it let whoever published last retire a colleague's earlier
+    -- row (measured 2026-09-14), and it blocked an author from retiring their own version
+    -- once someone else had improved on it.
+    select s.author_name into owner_now from public.skill_library s
+     where s.slug = skillhub_retire.id
+     order by string_to_array(s.version,'.')::int[] desc limit 1;
+    if owner_now is null then raise exception 'No skill with slug %', id; end if;
+    if not exists (select 1 from public.skill_library s
+                    where s.slug = skillhub_retire.id and s.author_name = skillhub_retire.agent) then
+      raise exception using errcode = 'insufficient_privilege',
+        message = format('Every version of "%s" belongs to someone else -- the newest is %s and you are %s. You may publish a better version under your own name, which supersedes theirs; you may not retire their work. Ask an admin if it has to go.', id, owner_now, agent);
+    end if;
+    perform public.retire_skill(id, reason, superseded_by, agent);
+    return jsonb_build_object('kind','skill','id',id,'retired_by',agent,'reason',reason,
+      'note','Retired, not deleted: it leaves search but stays readable, so a colleague who cited it still gets an answer.');
+
+  elsif kind = 'note' then
+    select n2.owner into owner_now from public.notes n2 where n2.id::text = skillhub_retire.id;
+    if owner_now is null then raise exception 'No note with id %', id; end if;
+    if owner_now <> agent then
+      raise exception using errcode = 'insufficient_privilege',
+        message = format('That note belongs to %s and you are %s. Write your own instead.', owner_now, agent);
+    end if;
+    -- public.notes.id, not id: the column list resolves against both the table and this
+    -- function's parameters, one of which is called id, and Postgres refuses with "column
+    -- reference is ambiguous". The same mistake made skillhub_publish_skill fail on every call
+    -- it ever received, unnoticed -- and it made retire fail here too, found in a simulation.
+    update public.notes set retired_at = now(), retired_by = agent, retired_reason = reason,
+           updated_by = agent, updated_at = now()
+     where public.notes.id::text = skillhub_retire.id;
+    get diagnostics n = row_count;
+    return jsonb_build_object('kind','note','id',id,'retired_by',agent,'rows',n);
+
+  elsif kind = 'document' then
+    select d.owner into owner_now from public.documents d where d.id::text = skillhub_retire.id;
+    if owner_now is null then raise exception 'No document with id %', id; end if;
+    if owner_now <> agent then
+      raise exception using errcode = 'insufficient_privilege',
+        message = format('That document record belongs to %s and you are %s.', owner_now, agent);
+    end if;
+    -- public.documents.id, not id: the column list resolves against both the table and this
+    -- function's parameters, one of which is called id, and Postgres refuses with "column
+    -- reference is ambiguous". The same mistake made skillhub_publish_skill fail on every call
+    -- it ever received, unnoticed -- and it made retire fail here too, found in a simulation.
+    update public.documents set retired_at = now(), retired_by = agent, retired_reason = reason,
+           updated_by = agent, updated_at = now()
+     where public.documents.id::text = skillhub_retire.id;
+    get diagnostics n = row_count;
+    return jsonb_build_object('kind','document','id',id,'retired_by',agent,'rows',n);
+  end if;
+
+  return jsonb_build_object('error', format('Unknown kind "%s". Use skill, note or document. A TABLE is not retired by an agent -- ask an admin.', kind));
+end $$;
+
+revoke all on function public.skillhub_retire(text,text,text,text,text) from public;
+
+-- The writing tools are not callable by anon or authenticated: they take an identity as a
+-- parameter, and only the edge function knows the verified one.
+revoke all on function public.skillhub_write_note(text,text,text,text[],boolean) from public;
+revoke all on function public.skillhub_publish_skill(text,text,text,text,text,text[],text) from public;
+revoke all on function public.skillhub_register_document(text,text,bigint,text,text,text,text) from public;
+grant execute on all functions in schema public to service_role, postgres;

@@ -149,8 +149,8 @@ language sql stable as $$
   select 'skill', s.slug, s.name,
          left(coalesce(s.description,''), 180),
          ts_rank(to_tsvector('swedish', coalesce(s.name,'')||' '||coalesce(s.description,'')||' '||coalesce(s.skill_md,'')), q.tq)
-  from public.skill_library s, q
-  where s.status <> 'deprecated'
+  from platform.v_current_skills s, q
+  where true
     and (s.visibility = 'public' or s.author_name = search.agent)
     and (to_tsvector('swedish', coalesce(s.name,'')||' '||coalesce(s.description,'')||' '||coalesce(s.skill_md,'')) @@ q.tq
          or s.slug ilike '%'||q.raw||'%')

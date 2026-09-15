@@ -17,9 +17,8 @@ begin
     select 'skill' as source, s.slug as id,
            left(coalesce(s.name,'')||E'\n'||coalesce(s.description,'')||E'\n'||coalesce(s.skill_md,''), 8000) as text,
            md5(coalesce(s.name,'')||coalesce(s.description,'')||coalesce(s.skill_md,'')) as text_hash
-    from public.skill_library s
-    where s.status <> 'deprecated'
-      and not exists (select 1 from platform.embeddings e
+    from platform.v_current_skills s
+    where not exists (select 1 from platform.embeddings e
                       where e.source='skill' and e.id=s.slug
                         and e.text_hash = md5(coalesce(s.name,'')||coalesce(s.description,'')||coalesce(s.skill_md,'')))
     union all

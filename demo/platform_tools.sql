@@ -141,7 +141,7 @@ begin
   select coalesce(jsonb_agg(x), '[]'::jsonb) into j from (
     select e.source as kind, e.id, round((1 - (e.vector <=> v))::numeric, 4) as similarity,
            case e.source
-             when 'skill' then (select s.name from public.skill_library s where s.slug = e.id)
+             when 'skill' then (select s.name from platform.v_current_skills s where s.slug = e.id)
              when 'note' then (select n.title from public.notes n where n.id::text = e.id)
              when 'document' then (select d.filename from public.documents d where d.id::text = e.id)
              when 'schema' then e.id

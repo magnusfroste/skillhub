@@ -93,6 +93,18 @@ check "retiring that skill works (the four-argument retire_skill exists)" \
   "select (public.skillhub_retire('agent_01','skill','seed-test-skill','seed test cleanup') ? 'retired_by')::text" "true"
 check "and it is deprecated, not deleted" \
   "select status from public.skill_library where slug='seed-test-skill'" "deprecated"
+# Two published versions of one slug -- the normal outcome of a colleague improving a
+# skill -- once broke similarity search, duplicated keyword hits and made the indexer
+# re-embed the slug forever. All three read platform.v_current_skills now; this pins it.
+check "a second version of a skill can be published" \
+  "select (public.skillhub_publish_skill('agent_01','seed-two-versions','Two versions','A probe skill with two published versions, written by the empty-database test to pin the one-row-per-slug rule: keyword search must return a slug once, the indexer must see only the newest version, and similarity search must not fail when a slug has more than one published version. It carries no procedure and is retired by the test.','p') ? 'slug')::text || ':' || (public.skillhub_publish_skill('agent_01','seed-two-versions','Two versions','A probe skill with two published versions, written by the empty-database test to pin the one-row-per-slug rule: keyword search must return a slug once, the indexer must see only the newest version, and similarity search must not fail when a slug has more than one published version. It carries no procedure and is retired by the test. Improved.','p','{}','1.1.0') ? 'slug')::text" "true:true"
+check "keyword search returns that slug once" \
+  "select count(*) from platform.search('seed-two-versions', 10) where id='seed-two-versions'" "1"
+check "the indexer sees that slug once, and the newest version" \
+  "select count(*)::text||':'||bool_or(c->>'text' like '%Improved.%')::text from jsonb_array_elements(public.embed_candidates(1000)) c where c->>'id'='seed-two-versions'" "1:true"
+q "insert into platform.embeddings(source,id,model,vector,text_hash) values ('skill','seed-two-versions','probe',array_fill(0::real,array[1536])::vector(1536),'x')" >/dev/null
+check "similarity does not fail on a slug with two versions" \
+  "select (public.skillhub_similar(to_jsonb(array_fill(0::real,array[1536])),'probe',3) is not null)::text" "true"
 check "retiring the note works too" \
   "select (public.skillhub_retire('agent_01','note',(select id::text from public.notes where title='Seed test'),'seed test cleanup') ? 'retired_by')::text" "true"
 

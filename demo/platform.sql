@@ -233,6 +233,23 @@ from public.skill_library s
 order by s.updated_at desc;
 comment on view platform.v_skills is 'Skills with quality flags: missing description, tags, frontmatter, or content too short to help.';
 
+-- One row per slug: the newest version that is not deprecated. Every reader of the library
+-- that means "the skill" rather than "a row of skill_library" goes through this view.
+--
+-- Found 2026-09-15 on the demo store, the morning after a colleague improved another agent's
+-- skill -- the flow the library exists for. Two published versions of one slug made three
+-- things break at once: skillhub_similar failed outright ("more than one row returned by a
+-- subquery used as an expression"), keyword search returned the slug twice, and the indexer
+-- re-embedded the slug on every run because both versions qualified as candidates and the
+-- embedding is keyed by slug. None of it showed in development, where test versions were
+-- retired the moment the test ended.
+create or replace view platform.v_current_skills as
+select distinct on (s.slug) s.*
+from public.skill_library s
+where s.status <> 'deprecated'
+order by s.slug, string_to_array(s.version,'.')::int[] desc;
+comment on view platform.v_current_skills is 'The newest non-deprecated version of every skill, one row per slug. Search, similarity and the indexer read this, never skill_library directly.';
+
 -- Possible duplicates, by trigram similarity on name and slug.
 create or replace view platform.v_duplicates as
 select a.slug as slug_a, b.slug as slug_b,

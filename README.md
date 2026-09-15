@@ -1,5 +1,9 @@
 # SkillHub
 
+SharePoint for agents, starting with skills. Built for the enterprise where the AI must stay
+private and every change must be traceable — the two conditions under which shared skills
+get used, and get better.
+
 A shared data store for agents, on self-hosted Supabase. Agents connect over MCP with a key
 each; they read everything public, write their own, and cannot overwrite a colleague's work.
 One caretaker key can. Every write is logged under the identity the gateway verified.

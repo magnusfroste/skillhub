@@ -198,6 +198,11 @@ const TOOLS: Tool[] = [
       sample_rows: { type: "array", items: { type: "object" },
         description: "The rows you are holding, as objects. At most 200 -- more than that is a delivery for the caretaker." },
       suggested_name: str("A name you would give the table, if you have one in mind."),
+      observations: { type: "array", items: { type: "string" },
+        description: "What you NOTICED about the data, one sentence each, naming the column: sentinel values ('hours_spent 999 means not recorded'), spellings ('status has closed in three casings'), units, blanks. This is the most valuable thing you contribute -- the caretaker's loader writes it into the column comments, so the next agent is warned. Said only in chat it is lost." },
+      document_id: str("The id from skillhub_upload_url, when the rows come from a file you uploaded. The caretaker then loads the file server-side; you never retype rows."),
+      natural_key: str("The column a re-delivery upserts on, e.g. ticket_no. Required when a file is attached."),
+      target_table: str("Only when you mean an EXISTING table and are asking for a column on it."),
     }, ["purpose", "fields"]),
     rpc: "skillhub_request_structure",
     needsAgent: true,
@@ -236,6 +241,32 @@ const TOOLS: Tool[] = [
       ["filename"],
     ),
     rpc: "skillhub_register_document",
+    needsAgent: true,
+  },
+  {
+    name: "skillhub_upload_url",
+    description:
+      "Hand a FILE of rows to the store without retyping them: registers the file and returns a one-time upload URL plus the exact curl line. Upload the bytes with that line (the file goes beside the model, not through it), then either skillhub_load_file into a table that already exists, or skillhub_request_structure with document_id, natural_key and your observations so the caretaker builds the table and loads the file. CSV today; save a spreadsheet as CSV first. Never paste rows into a chat or a tool argument -- sixty rows that way took 36 calls and stopped at 19.",
+    inputSchema: obj({
+      filename: str("The file's name, e.g. tickets_export_2026-09.csv"),
+      sha256: str("sha256 of the file (sha256sum <file>). Names the upload path and lets the store spot the same file delivered twice."),
+      description: str("What the file contains and where it came from: 'monthly export of support tickets from the case system'."),
+      bytes: { type: "integer", description: "Size in bytes, if you know it." },
+    }, ["filename", "sha256", "description"]),
+    rpc: "__upload_url__",
+    needsAgent: true,
+  },
+  {
+    name: "skillhub_load_file",
+    description:
+      "Load an uploaded CSV into a table that ALREADY EXISTS, upserting on a natural key -- this is how next month's export goes in without the caretaker. Reads the file server-side, no row passes through you. Refuses if the table does not exist: then use skillhub_request_structure with the document_id instead, and the caretaker loads it when resolving. Registers the delivery (file, hash, inserted, updated).",
+    inputSchema: obj({
+      document_id: str("The id skillhub_upload_url returned, after the upload finished."),
+      target_table: str("An existing table in public that follows the convention."),
+      natural_key: str("The column to upsert on, e.g. ticket_no. Must be a column of the table and present in every row."),
+      source_system: str("Where the export comes from, for the delivery register. Optional."),
+    }, ["document_id", "target_table", "natural_key"]),
+    rpc: "__load_file__",
     needsAgent: true,
   },
   {
@@ -331,6 +362,56 @@ async function semanticSearch(query: string, maxHits: number): Promise<unknown[]
   }) as unknown[];
 }
 
+// ---- Files as transport (DECISIONS.md 20) --------------------------------------------
+// The bytes go to Storage with a signed URL the agent uses from its own shell; the loader
+// reads them back here with the service key and upserts through skillhub_load_rows. No row
+// is ever emitted by the model.
+const BUCKET = "deliveries";
+const PUBLIC_URL = (Deno.env.get("SUPABASE_PUBLIC_URL") ?? "").replace(/\/$/, "");
+const storageHeaders = { apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` };
+
+async function signedUploadUrl(path: string): Promise<string> {
+  const r = await fetch(`${SUPABASE_URL}/storage/v1/object/upload/sign/${BUCKET}/${path}`, { method: "POST", headers: storageHeaders });
+  const t = await r.text();
+  if (!r.ok) throw new Error(`Storage would not sign an upload for ${path}: ${r.status} ${t.slice(0, 200)}`);
+  const rel = JSON.parse(t).url as string;            // "/object/upload/sign/<bucket>/<path>?token=..."
+  const base = PUBLIC_URL || SUPABASE_URL;
+  return `${base}/storage/v1${rel.startsWith("/") ? rel : "/" + rel}`;
+}
+async function objectExists(path: string): Promise<boolean> {
+  const r = await fetch(`${SUPABASE_URL}/storage/v1/object/info/authenticated/${BUCKET}/${path}`, { headers: storageHeaders });
+  return r.ok;
+}
+async function downloadObject(path: string): Promise<string> {
+  const r = await fetch(`${SUPABASE_URL}/storage/v1/object/authenticated/${BUCKET}/${path}`, { headers: storageHeaders });
+  if (r.status === 404 || r.status === 400) throw new Error(`The file is registered but not uploaded yet (${path}). Run the curl line skillhub_upload_url gave you, then try again.`);
+  if (!r.ok) throw new Error(`Storage answered ${r.status} for ${path}`);
+  return await r.text();
+}
+/** RFC 4180-ish: quoted fields, doubled quotes, commas or semicolons, CRLF. Header row required. */
+function parseCsv(text: string): Record<string, string>[] {
+  const rows: string[][] = []; let row: string[] = []; let cell = ""; let q = false;
+  const src = text.replace(/^\uFEFF/, "");
+  for (let i = 0; i < src.length; i++) {
+    const c = src[i];
+    if (q) { if (c === '"') { if (src[i + 1] === '"') { cell += '"'; i++; } else q = false; } else cell += c; continue; }
+    if (c === '"') q = true;
+    else if (c === "," || c === ";") { row.push(cell); cell = ""; }
+    else if (c === "\n" || c === "\r") { if (c === "\r" && src[i + 1] === "\n") i++; row.push(cell); cell = ""; if (row.some((x) => x !== "")) rows.push(row); row = []; }
+    else cell += c;
+  }
+  if (cell !== "" || row.length) { row.push(cell); if (row.some((x) => x !== "")) rows.push(row); }
+  if (rows.length < 2) throw new Error("The file has no data rows under its header.");
+  const header = rows[0].map((h) => h.trim().toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^_+|_+$/g, ""));
+  return rows.slice(1).map((r) => Object.fromEntries(header.map((h, i) => [h, (r[i] ?? "").trim()])));
+}
+async function documentPath(id: string): Promise<{ path: string; filename: string; sha256: string }> {
+  const d = await callRpc("skillhub_read", { kind: "document", id }) as any;
+  const path = d?.path ?? d?.document?.path; const filename = d?.filename ?? d?.document?.filename; const sha256 = d?.sha256 ?? d?.document?.sha256;
+  if (!path) throw new Error(`Document ${id} has no upload path. Register it with skillhub_upload_url (not register_document) so the bytes have somewhere to go.`);
+  return { path, filename, sha256 };
+}
+
 async function handle(body: any, agent: string): Promise<unknown | null> {
   const { id, method, params } = body ?? {};
   const meta = (params?._meta ?? {}) as Record<string, unknown>;
@@ -406,6 +487,48 @@ async function handle(body: any, agent: string): Promise<unknown | null> {
     if (tool.passAgent && agent) args.agent = agent;
 
     try {
+      if (tool.rpc === "__upload_url__") {
+        const sha = String(args.sha256 ?? "").toLowerCase();
+        if (!/^[a-f0-9]{64}$/.test(sha)) throw new Error("sha256 must be the 64-hex digest of the file: sha256sum <file>.");
+        const filename = String(args.filename ?? "").replace(/[^A-Za-z0-9._ -]/g, "_");
+        const path = `${sha}/${filename}`;
+        const reg = await callRpc("skillhub_register_document", {
+          agent, filename, sha256: sha, description: String(args.description ?? ""), bytes: args.bytes ?? null,
+          mime_type: filename.toLowerCase().endsWith(".csv") ? "text/csv" : null, source: "uploaded by " + agent, path,
+        }) as any;
+        // Same bytes, same path: a file already uploaded needs no second upload, and a signed
+        // URL would answer 409 to one. Say so instead of handing out a curl line that fails.
+        if (await objectExists(path)) {
+          return rpcOk(id, { content: [{ type: "text", text: JSON.stringify({
+            document_id: reg.id, path, already_uploaded: true, duplicate_of: reg.duplicate_of ?? null,
+            then: "This exact file is already in the store (same sha256). Skip the upload: go straight to skillhub_load_file into an existing table, or skillhub_request_structure with this document_id.",
+          }, null, 2) }] });
+        }
+        const url = await signedUploadUrl(path);
+        return rpcOk(id, { content: [{ type: "text", text: JSON.stringify({
+          document_id: reg.id, path, already_uploaded: false, duplicate_of: reg.duplicate_of ?? null,
+          upload_with: `curl -sS -X PUT -H 'content-type: text/csv' --upload-file '<the file>' '${url}'`,
+          then: "Run that from your shell; no API key is needed, the URL carries its own. When it returns, either skillhub_load_file(document_id, target_table, natural_key) into a table that exists, or skillhub_request_structure with document_id, natural_key and your observations so the caretaker builds the table and loads it.",
+          note: "The URL is single-use and expires. The file goes straight to the store; nothing in it passes through you.",
+        }, null, 2) }] });
+      }
+      if (tool.rpc === "__load_file__") {
+        const { path, filename, sha256 } = await documentPath(String(args.document_id ?? ""));
+        const rows = parseCsv(await downloadObject(path));
+        let inserted = 0, updated = 0, slices = 0;
+        for (let i = 0; i < rows.length; i += 500) {
+          const r = await callRpc("skillhub_load_rows", {
+            agent, target_table: args.target_table, natural_key: args.natural_key, rows: rows.slice(i, i + 500),
+            file_sha256: sha256, filename, source_system: args.source_system ?? null, register: i + 500 >= rows.length,
+          }) as any;
+          inserted += Number(r.inserted ?? 0); updated += Number(r.updated ?? 0); slices++;
+        }
+        return rpcOk(id, { content: [{ type: "text", text: JSON.stringify({
+          table: args.target_table, natural_key: args.natural_key, file: filename, rows_in_file: rows.length,
+          inserted, updated, slices, delivery_registered: true,
+          note: "Read skillhub_read kind=table for the column comments before you analyse: that is where the reading rules live.",
+        }, null, 2) }] });
+      }
       if (tool.rpc === "__semantic__") {
         const hits = await semanticSearch(String(args.query ?? ""), Number(args.max_hits ?? 5));
         if (hits === null) {

@@ -67,8 +67,12 @@ check "the onboarding steps are there" \
   "select count(*) from public.start_here" "9"
 check "the index-on-write trigger is installed" \
   "select count(*) from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname='platform' and p.proname='nudge_embed'" "1"
-check "the fifteen tools exist" \
-  "select count(*) from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname='public' and p.proname like 'skillhub_%'" "15"
+# Sixteen SQL functions behind seventeen tools: skillhub_upload_url and skillhub_load_file
+# live in the edge function (they talk to Storage), and skillhub_load_rows is SQL with no
+# tool of its own -- the loader calls it. Counting SQL, not tools, is what this database
+# receipt can verify.
+check "the sixteen skillhub_ functions exist" \
+  "select count(*) from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname='public' and p.proname like 'skillhub_%'" "16"
 check "rules are readable" \
   "select (public.skillhub_rules() ? 'placement_rule')::text" "true"
 check "overview answers" \

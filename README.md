@@ -66,7 +66,7 @@ worse, appears to work.
 | MCP server / indexer | `volumes/functions/*/index.ts` | container start | restart `supabase-edge-functions` |
 | Tool logic, rules, views | `demo/*.sql` | **every call** | apply with `psql`; effective immediately |
 
-The third row is the one that surprises people. The fifteen tools are thin: the edge function
+The third row is the one that surprises people. The seventeen tools are thin: the edge function
 reads the verified agent from Kong's header, overwrites the `agent` argument with it, and
 calls a Postgres function. Almost everything an agent experiences — the rules it reads, what
 a refusal says, what a tool will and will not do — is SQL, and changing it needs no deploy at
@@ -77,7 +77,7 @@ all. Which also means the database can be running SQL that exists in no file. Re
 
 A deploy of this repo gives you Supabase, the gateway with `/skillhub`, and the ten key
 slots. The data store itself — the conventions, the change log, the placement rule, the
-fifteen tools — is `demo/*.sql`, and it is applied by the `seed` service on every boot.
+seventeen tools — is `demo/*.sql`, and it is applied by the `seed` service on every boot.
 
 1. **Deploy** (see above). Paste the environment, deploy, set the `MCP_KEY_NN` slots you
    need, and **recreate Kong** so it renders them.
@@ -111,7 +111,7 @@ sh utils/test-seed-on-empty-db.sh
 ```
 
 It raises an empty database from the same image, seeds it twice, and checks that the store
-answers: the tables carry the conventions, the fifteen tools exist, the rules are readable,
+answers: the tables carry the conventions, the seventeen tools exist, the rules are readable,
 a write through the tool tier lands under the caller's identity, and the change log caught
 it. That is the receipt that a fresh deploy works.
 

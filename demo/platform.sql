@@ -569,13 +569,45 @@ comment on table platform.structure_requests is 'Agents asking for somewhere to 
 comment on column platform.structure_requests.sample_rows is 'The rows the agent was holding, so the data survives the wait. Samples, not a load: more than a couple of hundred rows is a delivery for the caretaker.';
 
 -- What the caretaker looks at.
+-- What an agent noticed about the data travels WITH the request. Measured 2026-09-15: an
+-- agent found a sentinel and a casing problem in an export, said both to the user, and the
+-- request it filed carried neither -- so the caretaker built the table without them and six
+-- sentinel rows were loaded as real hours. observations is where that goes now, and the
+-- caretaker's loader writes it into the column comments. document_id points at the uploaded
+-- file (the transport for the rows; see DECISIONS.md section 20), natural_key is the column a
+-- monthly re-delivery upserts on, target_table is set when the agent means an existing table.
+alter table platform.structure_requests add column if not exists observations text[];
+alter table platform.structure_requests add column if not exists document_id uuid;
+alter table platform.structure_requests add column if not exists natural_key text;
+alter table platform.structure_requests add column if not exists target_table text;
+comment on column platform.structure_requests.observations is 'What the requesting agent noticed about the data: sentinels, spellings, units. The loader writes these into column comments so the next reader is warned.';
+comment on column platform.structure_requests.document_id is 'The registered, uploaded file the rows come from. The loader reads it from Storage; no row passes through a language model.';
+comment on column platform.structure_requests.natural_key is 'The column a re-delivery upserts on, e.g. ticket_no.';
+
+-- Dropped first: a view cannot gain columns in the middle through create or replace, and
+-- the four new ones sit before status so the caretaker sees them where it reads.
+drop view if exists platform.v_structure_requests;
 create or replace view platform.v_structure_requests as
 select r.id, r.at::timestamp(0) as asked, r.requested_by, r.purpose, r.suggested_name,
        (select string_agg(f #>> '{}', ', ') from jsonb_array_elements(r.fields) f) as fields,
        coalesce(jsonb_array_length(r.sample_rows), 0) as sample_rows,
+       r.observations, r.document_id, r.natural_key, r.target_table,
        r.status, r.resolved_by, r.resolved_at::timestamp(0) as resolved, r.resolution, r.table_name
 from platform.structure_requests r
 order by (r.status = 'open') desc, r.at desc;
+
+-- The bucket uploaded files land in. Private: only the service key reads it, which is the
+-- loader. Guarded, because a bare Postgres from the same image has no storage schema until
+-- the storage service has run its migrations -- the seed must still pass there.
+do $b$
+begin
+  if to_regclass('storage.buckets') is not null then
+    insert into storage.buckets (id, name, public) values ('deliveries', 'deliveries', false)
+    on conflict (id) do nothing;
+  else
+    raise notice 'storage.buckets not present: the deliveries bucket is created on the first seed after the storage service has started.';
+  end if;
+end $b$;
 comment on view platform.v_structure_requests is 'Structure requests, open ones first. Resolve with platform.resolve_structure_request().';
 
 -- SECURITY DEFINER: the caretaker arrives as service_role, which has select on this table and

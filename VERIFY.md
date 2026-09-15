@@ -8,7 +8,7 @@ this order the first time; run the ones that apply after any change.
 |---|---|---|---|
 | 1 | Does this repository build a working store from nothing? | `utils/test-seed-on-empty-db.sh` | No — a throwaway database |
 | 2 | Is what is running what is committed? | `docker logs supabase-seed` + `utils/check-deployed-drift.sh` | Read-only |
-| 3 | Do all fifteen tools answer through the gateway? | `utils/smoke-test-tools.sh` | Writes, then retires what it wrote |
+| 3 | Do the fifteen chat tools answer through the gateway? | `utils/smoke-test-tools.sh` | Writes, then retires what it wrote |
 | 4 | Does the server speak the current MCP revision, and the legacy one? | `utils/test-mcp-protocol.py` | Read-only |
 | 5 | Does a real client adopt the current revision? | `utils/probe-mcp-era.py` | Read-only, run inside a client |
 
@@ -61,7 +61,7 @@ Deploy away from silently reopening it.
 sh utils/smoke-test-tools.sh https://<store>/skillhub <MCP_KEY_NN>
 ```
 
-Calls all fifteen tools as that agent, through Kong, exactly as a client would. The nine
+Calls the fifteen chat tools as that agent (the two file tools need a file; see below), through Kong, exactly as a client would. The nine
 reading tools must answer; the writing tools write a note, a skill, a document record and a
 structure request, and the test then **retires** the first three — that is the retire test,
 and it also means the run leaves nothing behind that search will find.
@@ -113,6 +113,23 @@ U=https://<store>/skillhub K=<MCP_KEY_NN> /opt/hermes/.venv/bin/python utils/pro
 Expect `discover_result set: True`, `initialize_result set: False`, and the negotiated version.
 
 ---
+
+## 5b. A file of rows, without a language model in the path
+
+The two file tools cannot be smoke-tested without a file, so this one is by hand, once.
+Make a small CSV with a header and a key column, then as an agent:
+
+```
+skillhub_upload_url(filename, sha256sum of the file, description)   -> a curl line
+<run the curl line from a shell; no key needed>
+skillhub_request_structure(purpose, fields, natural_key, document_id, observations)
+```
+
+Then as the caretaker: `select platform.load_registered_file(<request_id>);` and, a few
+seconds later, `select * from platform.deliveries order by at desc limit 1;`. Expect the
+table built, one row per key, the observations as column comments, and the delivery with
+the file's hash. A second `skillhub_load_file` of the same file into that table must report
+`inserted 0, updated N` — that is next month's export, and it needs nobody.
 
 ## 6. Ask an agent something you know the answer to
 

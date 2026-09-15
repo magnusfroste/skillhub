@@ -445,9 +445,26 @@ Two things follow that were not obvious before:
   four hundred exports becoming four hundred tables — and it remains deferred for the same
   reason: the next real export decides it.
 
-This is a 1.2 item, bounded: an `observations` field on the request, and a loader that
-runs server-side from a registered file. It changes the agent's role from *typist* to
-*hand-over* — the role it turned out to be good at.
+Built the same afternoon, and measured on the same file. `skillhub_upload_url` registers
+the file and returns a one-time signed upload URL — the agent uploads with `curl` from its
+own shell, no API key needed, no row through the model. `skillhub_request_structure` takes
+`observations`, `document_id` and `natural_key`. The caretaker's
+`platform.load_registered_file(request_id)` builds the table from the request, writes each
+observation into the column it names, resolves the request, and hands the file to the
+loader, which reads it from Storage and upserts through `skillhub_load_rows` in slices.
+`skillhub_load_file` lets an agent do the same into a table that already exists — next
+month's export, no caretaker.
+
+Same 61-row export: 60 inserted and 1 updated by the caretaker's load (the duplicate
+upserted on itself); the three observations the agent filed *are* the column comments on
+`hours_spent`, `status` and `ticket_no`, and `skillhub_read` hands them to the next agent;
+delivery registered with file, hash and counts. Then the agent alone, month two: 0 inserted,
+61 updated, delivery registered under its own name. The near-duplicate guard refused a
+`_v2` table beside the existing one on the first attempt — correctly — which is why the
+caretaker's call takes a `target_table` of its own choosing.
+
+The agent went from typing 19 rows in three minutes to handing over 60 in one call. The
+knowledge it had went into the store instead of a chat reply. That is the whole change.
 
 ---
 

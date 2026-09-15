@@ -298,9 +298,13 @@ begin
     'hint', 'Confirm a skill you followed with public.confirm_skill, and retire instead of deleting.');
 end $$;
 
+-- The five-argument overload is dropped first: create or replace with a new defaulted
+-- parameter would leave both, and the tool wrapper resolves by name.
+drop function if exists public.skillhub_register_document(text,text,bigint,text,text,text,text);
 create or replace function public.skillhub_register_document(
   agent text, filename text, bytes bigint default null, mime_type text default null,
-  sha256 text default null, description text default null, source text default null) returns jsonb
+  sha256 text default null, description text default null, source text default null,
+  path text default null) returns jsonb
 language plpgsql security definer set search_path = public, platform as $$
 declare new_id uuid; duplicate text; step text;
 begin
@@ -312,8 +316,9 @@ begin
   select d.filename into duplicate from public.documents d
    where skillhub_register_document.sha256 is not null
      and d.sha256 = skillhub_register_document.sha256 limit 1;
-  insert into public.documents (owner, created_by, updated_by, filename, bytes, mime_type, sha256, description, source)
-  values (agent, agent, agent, filename, bytes, mime_type, sha256, description, source)
+  insert into public.documents (owner, created_by, updated_by, filename, bytes, mime_type, sha256, description, source, bucket, path)
+  values (agent, agent, agent, filename, bytes, mime_type, sha256, description, source,
+          case when path is not null then 'deliveries' end, path)
   returning id into new_id;
   -- The next_step string is the whole of what the agent hears, so it decides what happens
   -- next. Measured 2026-09-13: the previous wording said the file "must be uploaded to
@@ -674,12 +679,17 @@ comment on function public.skillhub_add_rows(text,text,jsonb,text) is
 revoke all on function public.skillhub_add_rows(text,text,jsonb,text) from public;
 grant execute on function public.skillhub_add_rows(text,text,jsonb,text) to service_role, postgres;
 
+drop function if exists public.skillhub_request_structure(text,text,jsonb,jsonb,text);
 create or replace function public.skillhub_request_structure(
   agent          text,
   purpose        text,
   fields         jsonb,
   sample_rows    jsonb default null,
-  suggested_name text default null
+  suggested_name text default null,
+  observations   text[] default null,   -- what you noticed: sentinels, spellings, units
+  document_id    text default null,     -- the uploaded file the rows come from
+  natural_key    text default null,     -- the column a re-delivery upserts on
+  target_table   text default null      -- when you mean an existing table
 ) returns jsonb
 language plpgsql security definer set search_path = public, platform as $$
 declare
@@ -719,8 +729,10 @@ begin
     -- class of bug appeared in one day, and the second time I wrote it after documenting it.
     and to_tsvector('swedish', r.purpose) @@ websearch_to_tsquery('swedish', replace(btrim(skillhub_request_structure.purpose), ' ', ' OR '));
 
-  insert into platform.structure_requests (requested_by, purpose, suggested_name, fields, sample_rows)
-  values (agent, btrim(skillhub_request_structure.purpose), suggested_name, fields, sample_rows)
+  insert into platform.structure_requests (requested_by, purpose, suggested_name, fields, sample_rows,
+                                           observations, document_id, natural_key, target_table)
+  values (agent, btrim(skillhub_request_structure.purpose), suggested_name, fields, sample_rows,
+          observations, nullif(document_id,'')::uuid, natural_key, target_table)
   returning id into new_id;
 
   return jsonb_build_object(
@@ -735,11 +747,11 @@ begin
     end);
 end $$;
 
-comment on function public.skillhub_request_structure(text,text,jsonb,jsonb,text) is
+comment on function public.skillhub_request_structure(text,text,jsonb,jsonb,text,text[],text,text,text) is
   'Ask for somewhere to put structured data. Returns existing tables and other open requests that look related, so duplication is visible before it happens.';
 
-revoke all on function public.skillhub_request_structure(text,text,jsonb,jsonb,text) from public;
-grant execute on function public.skillhub_request_structure(text,text,jsonb,jsonb,text) to service_role, postgres;
+revoke all on function public.skillhub_request_structure(text,text,jsonb,jsonb,text,text[],text,text,text) from public;
+grant execute on function public.skillhub_request_structure(text,text,jsonb,jsonb,text,text[],text,text,text) to service_role, postgres;
 
 -- Retire something of your own. The counterpart to publishing: an agent that can add but
 -- never remove has to leave its own mistakes standing, and after raw SQL moves behind the
@@ -819,5 +831,161 @@ revoke all on function public.skillhub_retire(text,text,text,text,text) from pub
 -- parameter, and only the edge function knows the verified one.
 revoke all on function public.skillhub_write_note(text,text,text,text[],boolean) from public;
 revoke all on function public.skillhub_publish_skill(text,text,text,text,text,text[],text) from public;
-revoke all on function public.skillhub_register_document(text,text,bigint,text,text,text,text) from public;
+revoke all on function public.skillhub_register_document(text,text,bigint,text,text,text,text,text) from public;
 grant execute on all functions in schema public to service_role, postgres;
+
+
+-- ---------------------------------------------------------------------------
+-- Loading rows from a file, without a language model in the path.
+--
+-- skillhub_load_rows is what the edge function calls with the parsed rows of an uploaded
+-- CSV, in slices. It upserts on the natural key into a table that already exists and follows
+-- the convention -- an agent may re-deliver next month's export by itself -- and it never
+-- creates a table. Creation is the caretaker's act: platform.load_registered_file builds the
+-- table from a request (fields, natural key, the agent's observations as column comments),
+-- resolves the request, and asks the edge function to load the file. See DECISIONS.md 20.
+-- ---------------------------------------------------------------------------
+create or replace function public.skillhub_load_rows(
+  agent text, target_table text, natural_key text, rows jsonb,
+  file_sha256 text default null, filename text default null, source_system text default null,
+  register boolean default true) returns jsonb
+language plpgsql security definer set search_path = public, platform as $$
+declare
+  rel        regclass;
+  cols       text[];
+  have_raw   boolean; have_sha boolean; have_loaded boolean;
+  keys       text[];
+  r          jsonb;
+  ins        bigint := 0; upd bigint := 0;
+  existed    boolean;
+  col_list   text; val_list text; set_list text;
+begin
+  if agent is null or agent = '' then raise exception 'No agent identity from the gateway.'; end if;
+  rel := to_regclass('public.' || quote_ident(target_table));
+  if rel is null then
+    raise exception 'No table "%" in public. Rows are loaded into a table that exists; ask for one with skillhub_request_structure (attach the uploaded file and what you noticed) and the caretaker loads the file when it resolves the request.', target_table;
+  end if;
+  if (select count(*) from pg_attribute a where a.attrelid = rel and a.attnum > 0 and not a.attisdropped
+        and a.attname in ('owner','visibility','created_by','updated_by')) <> 4 then
+    raise exception '% does not carry the convention columns, so rows loaded there could not be attributed. It is not a table agents load into.', target_table;
+  end if;
+  if natural_key is null or not exists (select 1 from pg_attribute a where a.attrelid = rel and a.attname = natural_key and a.attnum > 0) then
+    raise exception 'natural_key "%" is not a column of %. Name the column a re-delivery should upsert on.', natural_key, target_table;
+  end if;
+  if not exists (select 1 from pg_index i join pg_attribute a on a.attrelid = i.indrelid and a.attnum = any(i.indkey)
+                  where i.indrelid = rel and i.indisunique and a.attname = natural_key and array_length(i.indkey::int[],1) = 1) then
+    execute format('create unique index if not exists %I on public.%I (%I)', target_table||'_'||natural_key||'_key', target_table, natural_key);
+  end if;
+  select array_agg(a.attname::text) into cols from pg_attribute a where a.attrelid = rel and a.attnum > 0 and not a.attisdropped;
+  have_raw := 'raw' = any(cols); have_sha := 'source_sha256' = any(cols); have_loaded := 'loaded_at' = any(cols);
+
+  for r in select * from jsonb_array_elements(rows) loop
+    -- only keys that are real columns and not the house's own; everything else stays in raw
+    select array_agg(k) into keys from jsonb_object_keys(r) k
+     where k = any(cols) and k not in ('id','owner','visibility','created_by','updated_by','created_at','updated_at','raw','source_sha256','loaded_at');
+    if keys is null or not (natural_key = any(keys)) then
+      raise exception 'A row has no value for the natural key "%". Every row needs one.', natural_key;
+    end if;
+    col_list := (select string_agg(quote_ident(k), ', ') from unnest(keys) k);
+    val_list := (select string_agg(format('nullif(%L, %L)', r->>k, ''), ', ') from unnest(keys) k);
+    set_list := (select string_agg(format('%I = excluded.%I', k, k), ', ') from unnest(keys) k where k <> natural_key);
+    execute format('select exists(select 1 from public.%I where %I = %L)', target_table, natural_key, r->>natural_key) into existed;
+    execute format(
+      'insert into public.%1$I (owner, created_by, updated_by, %2$s%3$s%4$s%5$s) values (%6$L, %6$L, %6$L, %7$s%8$s%9$s%10$s) '
+      'on conflict (%11$I) do update set updated_by = excluded.updated_by%12$s%13$s%14$s%15$s',
+      target_table, col_list,
+      case when have_raw then ', raw' else '' end,
+      case when have_sha then ', source_sha256' else '' end,
+      case when have_loaded then ', loaded_at' else '' end,
+      agent, val_list,
+      case when have_raw then format(', %L::jsonb', r::text) else '' end,
+      case when have_sha then format(', %L', file_sha256) else '' end,
+      case when have_loaded then ', now()' else '' end,
+      natural_key,
+      case when set_list is not null then ', ' || set_list else '' end,
+      case when have_raw then ', raw = excluded.raw' else '' end,
+      case when have_sha then ', source_sha256 = excluded.source_sha256' else '' end,
+      case when have_loaded then ', loaded_at = now()' else '' end);
+    if existed then upd := upd + 1; else ins := ins + 1; end if;
+  end loop;
+
+  if register then
+    perform platform.register_delivery(coalesce(source_system, 'file upload'), target_table, agent, filename, file_sha256, ins, upd,
+      format('%s rows in the file: %s inserted, %s updated on %s', jsonb_array_length(rows), ins, upd, natural_key));
+  end if;
+  return jsonb_build_object('table', target_table, 'natural_key', natural_key,
+    'rows_in_slice', jsonb_array_length(rows), 'inserted', ins, 'updated', upd,
+    'delivery_registered', register);
+end $$;
+revoke all on function public.skillhub_load_rows(text,text,text,jsonb,text,text,text,boolean) from public;
+grant execute on function public.skillhub_load_rows(text,text,text,jsonb,text,text,text,boolean) to service_role, postgres;
+
+-- The caretaker's act: build the table the request asks for, with the agent's observations
+-- as column comments, resolve the request, and hand the file to the loader. Runs as the
+-- caretaker (raw SQL door), never as an agent.
+-- target_table is the caretaker's decision, and it overrides what the agent suggested: the
+-- near-duplicate guard refused "support_tickets_v2" beside "support_tickets" on the first run
+-- of this -- correctly -- and the right answer was to load into the one that exists.
+create or replace function platform.load_registered_file(request_id bigint, resolved_by text default 'service_role',
+  loader_url text default 'http://functions:9000/skillhub', target_table text default null) returns text
+language plpgsql security definer set search_path = public, platform as $$
+declare
+  rq   platform.structure_requests%rowtype;
+  d    public.documents%rowtype;
+  tname text; f text; ob text; colname text; k int;
+begin
+  select * into rq from platform.structure_requests where id = request_id;
+  if rq.id is null then raise exception 'No request %', request_id; end if;
+  if rq.document_id is null then raise exception 'Request % has no uploaded file to load (document_id is null). The agent registers the file with skillhub_upload_url and uploads it first.', request_id; end if;
+  select * into d from public.documents where id = rq.document_id;
+  if d.path is null then raise exception 'Document % has no Storage path: it was registered but never uploaded.', rq.document_id; end if;
+  if rq.natural_key is null then raise exception 'Request % names no natural_key. The loader upserts on it; ask the agent which column identifies a row.', request_id; end if;
+
+  tname := coalesce(load_registered_file.target_table, rq.target_table, rq.suggested_name);
+  if tname is null or tname !~ '^[a-z][a-z0-9_]{2,}$' then raise exception 'Request % has no usable table name.', request_id; end if;
+
+  if to_regclass('public.'||quote_ident(tname)) is null then
+    perform public.create_shared_table(tname, left(rq.purpose, 500));
+    for f in select value #>> '{}' from jsonb_array_elements(rq.fields) loop
+      if f ~ '^[a-z][a-z0-9_]*$' and f not in ('id','owner','visibility','created_by','updated_by','created_at','updated_at') then
+        execute format('alter table public.%I add column if not exists %I text', tname, f);
+      end if;
+    end loop;
+    execute format('alter table public.%I add column if not exists raw jsonb, add column if not exists source_sha256 text, add column if not exists loaded_at timestamptz', tname);
+    execute format('alter table public.%I alter column %I set not null', tname, rq.natural_key);
+    execute format('create unique index if not exists %I on public.%I (%I)', tname||'_'||rq.natural_key||'_key', tname, rq.natural_key);
+    execute format('comment on column public.%I.raw is %L', tname, 'The original row as delivered, untouched. The typed columns are a reading of it.');
+    execute format('comment on column public.%I.source_sha256 is %L', tname, 'Which delivery this row came from: the sha256 of the file. platform.deliveries has the rest.');
+  end if;
+
+  -- The agent's observations become column comments where they name a column, and go on the
+  -- table comment otherwise. This is the step that was missing when the request carried none.
+  if rq.observations is not null then
+    foreach ob in array rq.observations loop
+      colname := null;
+      for f in select value #>> '{}' from jsonb_array_elements(rq.fields) loop
+        if position(f in ob) > 0 and f ~ '^[a-z][a-z0-9_]*$' then colname := f; exit; end if;
+      end loop;
+      if colname is not null then
+        execute format('comment on column public.%I.%I is %L', tname, colname, ob);
+      else
+        execute format('comment on table public.%I is %L', tname, left(rq.purpose,500) || E'\n' || ob);
+      end if;
+    end loop;
+  end if;
+
+  perform platform.resolve_structure_request(request_id, resolved_by,
+    format('Built %s from the request and loaded %s (%s). Observations written as column comments.', tname, d.filename, left(coalesce(d.sha256,''),12)), tname, false);
+
+  -- Hand the file to the loader: the edge function reads it from Storage and calls
+  -- skillhub_load_rows in slices. Internal call, so the identity is set here.
+  perform net.http_post(
+    url := loader_url,
+    headers := jsonb_build_object('Content-Type','application/json','x-consumer-username', resolved_by),
+    body := jsonb_build_object('jsonrpc','2.0','id',1,'method','tools/call','params',
+              jsonb_build_object('name','skillhub_load_file','arguments',
+                jsonb_build_object('document_id', rq.document_id::text, 'target_table', tname, 'natural_key', rq.natural_key))),
+    timeout_milliseconds := 300000);
+  return format('%s built and request %s resolved; the loader is reading %s. Check platform.deliveries in a moment.', tname, request_id, d.filename);
+end $$;
+comment on function platform.load_registered_file(bigint,text,text,text) is 'Caretaker only: build the table a request asks for (observations as column comments), resolve it, and have the loader read the uploaded file into it.';

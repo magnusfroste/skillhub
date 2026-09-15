@@ -406,6 +406,49 @@ caretaker **loads** it. The placement rule does not yet say this; the agent foll
 it had and did the wrong kind of work well. Whether the request should carry the agent's
 observations as a field, or the rule should simply forbid re-keying, is an open decision.
 
+## 20. Tabular data from a person: the file is the transport, not the chat
+
+§19 measured the wrong thing being done well. The agent was asked to put an export into the
+store and did what its tools allow: it re-keyed rows through the language model, three or
+four per call, and stopped at 19 of 60. A typed table did not cause that, and a schemaless
+one — a `jsonb` landing table, the SaaS pattern — would not have cured it. The bottleneck is
+that **the file never reaches the database; only the model's tokens do.** Sixty rows became
+36 calls and half a table. Five thousand rows would not arrive at all.
+
+What a spreadsheet tool actually does when you hand it a CSV is the clue: it does not let
+you type the rows in; it takes the file and parses it server-side. That is the missing
+capability, and it is small:
+
+```
+agent    register_document(tickets.csv)        the bytes go up, they are not re-keyed
+agent    request_structure(...,
+           observations: ["999 in hours means not recorded",
+                          "closed is spelled three ways"])
+loader   reads the CSV where the bytes are, creates or fills the table,
+         writes the observations into the column comments, registers the delivery
+```
+
+The agent keeps the part it did well in §19 — it noticed the sentinel and the casing on its
+own — and that goes into the request as a field instead of evaporating in a reply. The load
+happens where the file is, with SQL, the way the caretaker did it. No row passes through
+the model except the sample the agent reads to form its observations.
+
+Two things follow that were not obvious before:
+
+- **Uploading to Storage stops being double storage for this case.** §19's rule — a pointer
+  and a hash by default, the file only when its origin cannot be trusted — stands for
+  documents. For a file that is to be *loaded*, Storage is the transport, not a second
+  copy: the loader has to be able to read the bytes.
+- **Typed columns keep winning for the reason they won today**: a `jsonb` key cannot carry
+  a comment, and the comment is where the reading rule lives and how `skillhub_query`
+  warns the next agent. The landing-table pattern remains what it was — a defence against
+  four hundred exports becoming four hundred tables — and it remains deferred for the same
+  reason: the next real export decides it.
+
+This is a 1.2 item, bounded: an `observations` field on the request, and a loader that
+runs server-side from a registered file. It changes the agent's role from *typist* to
+*hand-over* — the role it turned out to be good at.
+
 ---
 
 ## What this does not do yet

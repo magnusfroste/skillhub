@@ -507,16 +507,14 @@ services:
   ## skillhub: the house's own MCP server (the edge function `skillhub`).
   ## The same key check as /mcp. Kong's key-auth sets X-Consumer-Username on the way
   ## up, which gives the function a verified agent_NN to write as.
-  ## /lager finns kvar som alias tills alla agenter bytt; ta bort det sedan.
   - name: skillhub-mcp
-    _comment: 'MCP: /skillhub (alias /lager) -> http://functions:9000/skillhub'
+    _comment: 'MCP: /skillhub -> http://functions:9000/skillhub'
     url: http://functions:9000/skillhub
     routes:
       - name: skillhub-mcp
         strip_path: true
         paths:
           - /skillhub
-          - /lager
     plugins:
       - name: cors
       - name: key-auth

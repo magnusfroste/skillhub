@@ -202,14 +202,19 @@ than skills, which require the agent to fetch them. So work that must be easy to
 lives in a second MCP server of our own: the edge function in `volumes/functions/skillhub`,
 routed by Kong at `/skillhub` behind the same `apikey` header and the same consumers.
 
-It **adds to** Supabase MCP rather than replacing it. `execute_sql` is what let an agent
-invent a good ingestion pattern on its own; the tools are for the work that should come out
-the same every time. Point an agent at both.
+It is the **only** door for an agent key. Until 2026-09-12 agents also had Supabase's own MCP
+server with `execute_sql`, and that was where an agent invented a good ingestion pattern on
+its own — and where another wrote a row under a colleague's name, created a 36,645-row table
+the change log never saw, and dropped a table nobody recorded. Raw SQL now belongs to the
+caretaker alone (`/mcp`, group `admin`); the tools are the work that has to come out the same
+every time, and everything an agent needs is behind them.
 
-Eleven tools: `skillhub_overview`, `skillhub_search`, `skillhub_rules`, `skillhub_read`,
-`skillhub_similar`, `skillhub_activity`, `skillhub_write_note`, `skillhub_publish_skill`,
-`skillhub_register_document`, `skillhub_whoami`, `skillhub_report`. `/lager` stays as a Kong
-alias until every agent has switched.
+Seventeen tools: `skillhub_overview`, `skillhub_search`, `skillhub_rules`, `skillhub_read`,
+`skillhub_similar`, `skillhub_activity`, `skillhub_query`, `skillhub_report`,
+`skillhub_whoami`, `skillhub_write_note`, `skillhub_publish_skill`, `skillhub_add_rows`,
+`skillhub_register_document`, `skillhub_upload_url`, `skillhub_load_file`,
+`skillhub_request_structure`, `skillhub_retire`. What each does and refuses is in
+[DEMO.md](DEMO.md).
 
 `skillhub_read` is the counterpart to the two searches: they say *which* object, it returns
 *all* of it. That is the deliberate split — retrieval finds like RAG, reading happens whole
@@ -232,12 +237,13 @@ context at all. So a rule an agent must not miss belongs in the system prompt (h
 seeds it into `SOUL.md`) or in a constraint it cannot get around — never only in a tool
 description. Every description here front-loads its instruction into the first clause.
 
-**Identity is verified here, unlike through `execute_sql`.** Kong's key-auth sets
-`X-Consumer-Username` on the way upstream, so the function knows which `agent_NN` the key
-belongs to and fills `owner`/`created_by` from that. Tested: a call carrying agent_02's key
-and claiming `"agent": "agent_99"` in its arguments wrote a row owned by `agent_02`. Writes
-made with raw SQL remain self-reported — that difference is the argument for moving routine
-writes to the tools.
+**Identity is taken from the gateway and cannot be stated.** Kong's key-auth sets
+`X-Consumer-Username` on the way upstream; every writing tool takes `agent_NN` from that
+header and overwrites whatever the call supplied. Verified 2026-09-14 with three lies at once
+— another agent's name in the argument *and* in a hand-forged `X-Consumer-Username` header —
+and the row landed under the calling key in `owner`, `created_by` and `updated_by`, with the
+change log agreeing. Through raw SQL the author is whatever the row says; that door is the
+caretaker's, and its writes are logged as `service_role`.
 
 The function has no external imports: it reaches the database through PostgREST with the
 service key that is already in its environment, calling `public.skillhub_*` wrappers because
@@ -246,79 +252,95 @@ reports the function as missing — that bit the first version.
 
 ## Using the MCP endpoint
 
-Endpoint: `https://<kong-domain>/mcp`, streamable HTTP. Authentication is the header
-`apikey: <key>` — **not** `Authorization: Bearer`. Kong's key-auth only reads `apikey`;
-a Bearer token is ignored and answered with `401 No API key found in request`.
+Two doors, one header. Authentication is `apikey: <key>` — **not** `Authorization: Bearer`;
+Kong's key-auth only reads `apikey`, and a Bearer token is answered with
+`401 No API key found in request`. Both doors speak streamable HTTP, and the server speaks
+MCP `2026-07-28` alongside the legacy `initialize` handshake.
 
-Accepted keys: any `MCP_KEY_NN` (consumer `agent_NN`), or the project's `SERVICE_ROLE_KEY` (acl group `admin`).
-Do not hand out the service role key — it also unlocks REST, Storage and Auth admin, and
-rotating it means redeploying every service.
+| Door | Who | Key | What is behind it |
+|---|---|---|---|
+| `https://<domain>/skillhub` | every agent, and the caretaker | any `MCP_KEY_NN` (consumer `agent_NN`), or the service key | the seventeen house tools; identity from the key |
+| `https://<domain>/mcp` | the caretaker only | `SERVICE_ROLE_KEY` (consumer `service_role`, group `admin`) | Supabase's own MCP server: `execute_sql`, `apply_migration`, `list_tables`, … — raw SQL, as the database administrator |
 
-Hermes Agent, `~/.hermes/config.yaml`:
+An agent key on `/mcp` gets `403 You cannot consume this service`. The key is valid; it is
+not in the admin group. Do not hand out the service role key — it also unlocks REST, Storage
+and Auth admin, and rotating it means redeploying every service.
+
+Hermes Agent on a laptop, `~/.hermes/config.yaml` — or paste `utils/agent-invite.md` and let
+it write this itself:
 
 ```yaml
 mcp_servers:
-  supabase:
-    url: "https://<kong-domain>/mcp"
+  skillhub:
+    url: "https://<domain>/skillhub"
     headers:
       apikey: "${SUPABASE_MCP_KEY}"
     enabled: true
     timeout: 120
 ```
 
-Then `/reload-mcp`. Tools exposed by Studio's server: `list_tables`, `execute_sql`,
-`apply_migration`, `list_migrations`, `list_extensions`, `get_logs`, `get_advisors`,
-`get_project_url`, `get_publishable_keys`, `generate_typescript_types`, `search_docs`.
+The caretaker (hermes-easy with `SUPABASE_ADMIN_KEY` set) gets a second entry, `supabase`, at
+`/mcp` with the service key, written by its boot seed. Nobody else has one.
 
 ### What a key does and does not control
 
-Kong decides **who** reaches `/mcp`. It does not decide **what** they may do: Studio's MCP
-server runs every call as the database administrator, regardless of which key let the
-request in. Every holder of an `MCP_KEY_NN` can read all tables, write all tables, and
-run DDL through `apply_migration`. Row level security does not apply to them.
+Kong decides **who** reaches which door. What an **agent key** may do is decided by the
+tools: every write takes its identity from the gateway, a colleague's work cannot be
+overwritten or retired, nothing is deleted, no table is created, and there is no raw SQL.
+Row level security is not the mechanism — all agent keys share one database role, and that
+role bypasses it — so the tool tier is where enforcement lives; DECISIONS.md, section 14,
+says why and what the route to real RLS is.
 
-That is fine for a shared read/write workspace among a few trusted people, which is what
-this repo is for. It is not a multi-tenant boundary. When per-user permissions are
-needed, the answer is a separate MCP service that authenticates the user against Supabase
-Auth and queries with the user's JWT, so RLS applies — not more Kong rules.
-
-Client-side mitigation (a user can remove it, so treat it as guidance, not a control):
-
-```yaml
-    tools:
-      exclude: [apply_migration]
-```
+What the **service key** may do is everything. Studio's MCP server runs every call as the
+database administrator, reads every private note, and nothing in the database stops a
+`drop`. That is an administrator, and it has to be one person's stated responsibility rather
+than a key that circulates. The caretaker's own prompt carries the rules a mechanism cannot:
+confirm before anything irreversible, never delete to start over, prefer the house tools.
+Client-side tool exclusion (`tools: exclude: [apply_migration]`) is guidance for that one
+agent, not a control — a user can remove it.
 
 ## Semantic search
 
-`plattform.inbaddningar` holds one vector per object per model, and the `embed` edge function
-keeps it current: every five minutes pg_cron calls it through pg_net, it asks
-`embed_kandidater` what lacks a current embedding, sends the texts to the endpoint in
-`EMBEDDING_*`, and writes the vectors back. Agents never see any of it — they write a note
-and it becomes findable by meaning a few minutes later. That is the AnythingLLM division of
-labour: whoever owns ingestion owns the index. Putting the endpoint in each agent's prompt
-would instead produce an index reflecting which agent remembered, and spread the key to
-every laptop.
+`platform.embeddings` holds one vector per object per model, and the `embed` edge function
+keeps it current two ways. A write to a skill, a public note or a document record nudges the
+indexer directly from the database (`platform.nudge_embed`, through pg_net) and returns
+without waiting for it — measured 0.4 s from publish to vector on a fresh install. Every five
+minutes pg_cron runs the same function as the net that catches anything the nudge missed.
+The function asks `embed_candidates` what lacks a current embedding, sends the texts to the
+endpoint in `EMBEDDING_*` in slices of `EMBEDDING_MAX_INPUTS`, and writes the vectors back.
+Agents never see any of it: they write a note, and a colleague finds it by meaning before the
+conversation has moved on. Whoever owns ingestion owns the index; putting the endpoint in each
+agent's prompt would instead produce an index reflecting which agent remembered, and spread
+the key to every laptop.
 
-`text_hash` makes it idempotent: edited text is re-embedded, unchanged text is skipped.
-The model name is stored per row because vectors from different models must never be
-compared; `demo/plattform_vektor.sql` rebuilds the column for a different dimension and
-refuses while rows exist.
+`text_hash` makes it idempotent: edited text is re-embedded, unchanged text is skipped. The
+model name is stored per row because vectors from different models must never be compared;
+`demo/platform_vector.sql` rebuilds the column for a different dimension and refuses while
+rows exist. Only the newest version of a skill is embedded, searched and returned — a slug
+with two published versions once broke all three at once (`platform.v_current_skills`).
 
-**Whole objects, not chunks.** A skill, a note or a document record is one vector.
-Retrieval returns an identifier and the agent then fetches the whole thing, so nothing is
-lost at a chunk boundary. The cost is that a long document blurs into one vector — fine
-here, because the document rows carry filename and description, not the file's text.
+**Whole objects, not chunks.** A skill, a note or a document record is one vector. Retrieval
+returns an identifier and the agent fetches the whole thing with `skillhub_read`, so nothing
+is lost at a chunk boundary. The cost is that a long document blurs into one vector — a
+14,000-character manual is one point in space. Good enough to find the right thing; not
+enough to quote from the middle of it (DECISIONS.md, on citing a document).
 
-**Structured tables are deliberately not embedded.** "How many NCRs did this supplier
-cause last year" is a `group by`, not a similarity search, and vector search would answer it
-worse. The agent picks the mode: `skillhub_sok` for words, `skillhub_liknande` for meaning,
-`execute_sql` for facts.
+**Structured tables are deliberately not embedded — their comments are.** "How many tickets
+did this customer open last quarter" is a `group by`, not a similarity search, and vector
+search would answer it worse. What *is* embedded from a table is its comment and its column
+comments, because that is where "how this data has to be read" is written down: the
+sentinel value to exclude, the spelling to normalise. The agent picks the mode:
+`skillhub_search` for words, `skillhub_similar` for meaning, `skillhub_query` for facts —
+and a word search that finds nothing falls back to meaning by itself, because the agent
+did not reach for the semantic tool on its own and the wrong answer arrived as a confident
+number, thirty-eight times too high.
 
-Measured on the live store, 486 objects embedded with `text-embedding-3-small`: "hur
-hanterar vi missnöjda kunder" returns the complaint skill at 0.49 although neither phrase
-shares a word with it. Scores sit between 0.35 and 0.5 for good hits — with this model on
-Swedish, treat results as leads to open, not as answers.
+Measured on a running store with `text-embedding-3-small`: *"får jag ta hem tjänstebilen
+över helgen och köra privat?"* returns the fleet-policy skill at 0.54 although the two share
+no word, and *"parkeringsböter körjournal"* reaches it through the fallback after keyword
+search found nothing. A Swedish question reaches an English column comment at about 0.50.
+Good hits sit between 0.4 and 0.55 with this model on Swedish — treat results as leads to
+open with `skillhub_read`, not as answers.
 
 ## Known traps
 
@@ -338,15 +360,17 @@ never leaves the container):
 docker exec <db-container> sh -c 'psql -U postgres -c "ALTER USER supabase_read_only_user WITH PASSWORD '"'"'$POSTGRES_PASSWORD'"'"'"'
 ```
 
-**Tables created via `execute_sql`/`apply_migration` have no RLS.** Supabase grants
-`anon` and `authenticated` full privileges on new tables in `public` by default, and Kong
-exposes `/rest/v1` on the same domain. A table created by an agent is readable *and
-writable* by anyone holding the anon key until `ALTER TABLE … ENABLE ROW LEVEL SECURITY`
-is run. Views need `ALTER VIEW … SET (security_invoker = true)` or they bypass RLS on the
-tables underneath. Make RLS-on part of every migration from day one.
+**A table created with raw SQL has no RLS.** Supabase grants `anon` and `authenticated` full
+privileges on new tables in `public` by default, and Kong exposes `/rest/v1` on the same
+domain — so a table the caretaker creates with a bare `create table` is readable *and
+writable* by anyone holding the anon key until `ALTER TABLE … ENABLE ROW LEVEL SECURITY` is
+run. `create_shared_table` enables it, and the DDL guard refuses a table in `public` without
+the convention columns, so the trap only opens if the caretaker bypasses the helper. Views
+need `ALTER VIEW … SET (security_invoker = true)` or they bypass RLS on the tables
+underneath. Agents cannot create tables at all.
 
 **Files belong in Storage, not in tables.** An agent that base64-chunks a spreadsheet into
-a table through `execute_sql` works, but each multi-hundred-kB statement can make Studio
+a table through raw SQL works for the caretaker, but each multi-hundred-kB statement can make Studio
 drop the connection (Kong logs `upstream prematurely closed`, the client sees 502).
 
 **Kong needs the variable in `docker-compose.yml`.** `kong-entrypoint.sh` substitutes

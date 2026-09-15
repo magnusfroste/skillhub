@@ -505,8 +505,8 @@ services:
             - admin
 
   ## skillhub: the house's own MCP server (the edge function `skillhub`).
-  ## Samma nyckelkontroll som /mcp. Kongs key-auth sätter X-Consumer-Username
-  ## på vägen upp, vilket ger funktionen en verifierad agent_NN att skriva som.
+  ## The same key check as /mcp. Kong's key-auth sets X-Consumer-Username on the way
+  ## up, which gives the function a verified agent_NN to write as.
   ## /lager finns kvar som alias tills alla agenter bytt; ta bort det sedan.
   - name: skillhub-mcp
     _comment: 'MCP: /skillhub (alias /lager) -> http://functions:9000/skillhub'
@@ -530,7 +530,7 @@ services:
             - mcp
 
   ## skillhub: the embedding job. `admin` (service_role) only -- the agents'
-  ## nycklar ska inte kunna trigga det, och pg_cron når funktionen internt utan Kong.
+  ## keys must not be able to trigger it, and pg_cron reaches the function internally without Kong.
   - name: embed-job
     _comment: 'POST /embed -> http://functions:9000/embed'
     url: http://functions:9000/embed

@@ -732,6 +732,25 @@ description. Never base64 in a column. Register it with skillhub_register_docume
    finds the passage again, how an auditor checks it, and how a colleague tells your
    summary from the manual. A reference nobody can follow back is not a reference.
 
+   WHERE THE BYTES LIVE: A POINTER AND A HASH BY DEFAULT. The catalogue row records
+   where the original is (source) and which version was read (sha256). That is enough
+   when the original lives somewhere the organisation already trusts -- a document
+   system, a shared drive, a source system. Upload the file itself into Storage only when
+   the origin cannot be trusted to keep it: somebody's desktop, a laptop, an email.
+   Uploading is not free even though disk is: it makes two copies that can drift, and the
+   question becomes which one is true. The hash is how that is caught -- the same file
+   registered again with a different hash is a new revision, with the same hash a
+   duplicate, and register_document says which.
+
+   The test is the source path. "/home/<someone>/Desktop/…" is the case FOR uploading:
+   the store's knowledge of the file survives that machine, the file itself does not.
+   A path into a document management system is the case against: a pointer is all the
+   store needs, and a second copy is drift waiting to happen.
+
+   Said as a picture: the files are books in other buildings. The catalogue says where
+   they stand and which edition. The skills are what the librarians learned by reading
+   them -- which is why an agent can answer about a drawing it could never open.
+
    NEVER PUT QUOTATION MARKS AROUND TEXT YOU CONDENSED. Shortening is fine and usually
    right -- presenting the short version as the source's words is not. If it is not
    character for character, write it as your own sentence, or say plainly that it is a

@@ -750,6 +750,11 @@ TEXT THAT SOMEONE SHOULD FIND BY MEANING NEVER BELONGS IN A TABLE CELL.
 FILES (pdf, xlsx, images) -> the catalogue keeps a REFERENCE only: name, bytes, sha256,
 description. Never base64 in a column. Register it with skillhub_register_document.
 
+   ROWS IN A FILE (a csv or spreadsheet export) are handed over, never retyped: save as
+   CSV, skillhub_upload_url, run the curl line, then skillhub_load_file into the table that
+   holds this data -- or skillhub_request_structure with document_id, natural_key and your
+   observations when no table fits. The house standard is the skill load-from-source-system.
+
    BUT REGISTERING A FILE SHARES NOTHING. Nothing here reads inside a file, and no later
    step will: a registered document is findable by its NAME and cannot answer a single
    question about what it says. So if you can read the file, THE CONTENT IS YOUR JOB.

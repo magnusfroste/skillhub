@@ -318,7 +318,9 @@ begin
      and d.sha256 = skillhub_register_document.sha256 limit 1;
   insert into public.documents (owner, created_by, updated_by, filename, bytes, mime_type, sha256, description, source, bucket, path)
   values (agent, agent, agent, filename, bytes, mime_type, sha256, description, source,
-          case when path is not null then 'deliveries' end, path)
+          -- bucket is NOT NULL (default 'shared'); an explicit null is not the default.
+          -- Found 2026-09-15 on the demo: every registration without a path failed.
+          case when path is not null then 'deliveries' else 'shared' end, path)
   returning id into new_id;
   -- The next_step string is the whole of what the agent hears, so it decides what happens
   -- next. Measured 2026-09-13: the previous wording said the file "must be uploaded to

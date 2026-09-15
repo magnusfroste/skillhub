@@ -86,103 +86,99 @@ comment on view platform.v_unregistered_data is 'Large tables with no delivery r
 -- 2026-09-14 by running the seed twice against an empty database -- the first run passed.
 do $do$
 begin
-  if not exists (select 1 from public.skill_library where slug = 'load-from-source-system') then
+  -- A new VERSION, never an edit: an existing instance keeps 1.0.0 (marked superseded) and
+  -- gets 1.1.0 beside it; a fresh one gets 1.1.0 only. Found 2026-09-15 on the demo: the
+  -- seed inserted the skill only when the slug was absent, so no instance ever received a
+  -- rewrite -- and 1.0.0 told agents a person uploads the file.
+  if not exists (select 1 from public.skill_library where slug = 'load-from-source-system' and version = '1.1.0') then
     insert into public.skill_library (slug, name, description, skill_md, version, author_name, license, tags, visibility, status)
     values (
       'load-from-source-system',
       'Load data from a source system',
-      'The house standard for bringing an export (xlsx, csv, json) from another system into the store so it can be trusted, updated and traced.',
+      'The house standard for bringing an export (csv, xlsx, json) from another system into the store: the file is handed over and loaded server-side, never retyped; the caretaker builds a table only when none fits.',
       $md$---
     name: load-from-source-system
     description: Follow this when you bring a file or export from another system into the store.
-    version: 1.0.0
+    version: 1.1.0
     license: MIT
     ---
 
     # Load data from a source system
 
-    The pattern comes from a quality register: 5,812 rows out of an xlsx, loaded so they can
-    still be trusted a year later. Follow it and the next system will be the same rather than
-    slightly different.
+    You are holding an export -- csv, xlsx, json -- from another system. The rows go in as a
+    FILE, never through you: sixty rows retyped through a model took 36 calls and stopped at
+    19. There are two cases, and the first thing to find out is which one you are in.
 
     ## Before you start
 
-    0. **A delivery, not a specification.** You start because you are holding an export, not
-       because you read an API document. A schema listing describes what could exist in someone
-       else's system; a company typically uses a fraction of its ERP -- production but not
-       ticketing, say. Designing a table per entity in a specification fills the catalogue with
-       structures no data will ever reach, and they will sit in platform.v_abandoned_tables as
-       evidence. API or flat file makes no difference: the trigger is the file in your hands.
-
-    1. `select * from platform.search('<the system''s name>')` -- does the data already exist?
-    2. `select * from platform.v_sources` -- has it already been loaded, and how fresh is it?
-    3. Count the rows in the source file. You need something to compare against afterwards.
-
-    ## The table
-
-    Create it with `select public.create_shared_table('name', 'description');` and add:
-
-    - **One parsed column per field** in the source, with a sensible type: dates as `date`,
-      numbers as `numeric`, the rest `text`. Keep one naming style across the whole table.
-    - **`raw jsonb not null`** -- the whole original row. This is the most important step. If
-      you parse something wrong, everything can be recomputed from `raw` without going back to
-      the source system.
-    - **`source_sha256 text`** -- the checksum of the file the row came from.
-    - **`loaded_at timestamptz default now()`**.
-
-    **Change the primary key to the business's own key** if there is one (case number, order
-    number, registration number):
-
-        alter table public.<table> drop constraint <table>_pkey;
-        alter table public.<table> add primary key (<natural_key>);
-
-    This is what stops next month's export from duplicating everything. No natural key: put a
-    unique constraint on the columns that together identify a row.
-
-    ## The load
-
-    - Empty cells become `null`, never an empty string. Otherwise every `count` and `group by`
-      lies.
-    - Write in statements of 1,000-2,000 rows. Larger statements drop Studio's connection (502).
-    - When updating existing data use `on conflict (<key>) do update` rather than deleting
-      first. The history survives and you can see what changed.
-    - Index the columns you will filter on: date, status, customer, supplier.
-
-    ## Afterwards, in the same session
-
-    1. Compare: `select count(*)` against the number of rows in the source file. If they differ,
-       say so.
-    2. Register the delivery:
-
-           select platform.register_delivery(
-             'Source system name', '<table>', 'agent_NN',
-             'filename.xlsx', '<sha256>', <inserted>, <updated>, 'comment');
-
-       The function warns if the same file has been loaded before.
-    3. Register the source file in `documents` with filename, bytes, sha256 and a description.
-       The file itself is uploaded to Storage by a person -- you cannot upload bytes.
-    4. Comment the table and every column. The next agent reads the comments, not your session.
-    5. **Write down how the data has to be read.** Sentinel values, unreliable fields, which
-       column is the dependable key, what must be excluded from a total. Put it in the skill for
-       that dataset, or in a note. This is the step that pays for itself: a colleague who skips
-       it later gets a confident wrong number instead of an error. Measured once at a factor of
+    1. `skillhub_search` the system's name and the subject. Does a table for this data exist?
+       `skillhub_overview` lists every table and what it holds.
+    2. Count the rows in the file. You will compare against it afterwards.
+    3. Save a spreadsheet as CSV. The loader reads CSV (comma or semicolon, quotes, BOM); an
+       xlsx is only catalogued.
+    4. Read the data before you hand it over, and write down what you see: a sentinel value
+       (`hours_spent 999` = not recorded), one status in several spellings, blanks that mean
+       something, a duplicated key, units. One sentence each, naming the column. These are
+       your OBSERVATIONS and they are the most valuable thing you contribute: they become the
+       column comments the next agent reads. Said only in chat they are lost, and the next
+       agent gets a confident wrong number instead of an error. Measured once at a factor of
        thirty-eight.
+
+    ## Case A: the table exists -- you do it all yourself
+
+    1. `skillhub_upload_url(filename, sha256, description)` registers the file and returns a
+       curl line.
+    2. Run the curl line from the terminal. The bytes go to Storage beside the model, not
+       through it. No key is needed.
+    3. `skillhub_load_file(document_id, target_table, natural_key)`: the store reads the file
+       server-side and upserts on the key. Next month's export updates the rows that changed
+       and adds the new ones; the delivery is registered with file, hash, inserted, updated.
+    4. Compare inserted + updated with your row count. If they differ, say so.
+    5. Anything new you noticed about the data goes in a note that names the table, or in a
+       new version of that dataset's skill.
+
+    ## Case B: no table fits -- you describe it, the caretaker builds it
+
+    1. and 2. as above: upload the file first.
+    3. `skillhub_request_structure(purpose, fields, natural_key, document_id, observations,
+       suggested_name)`: the purpose in a sentence, the fields as they are in the file, the
+       key a re-delivery upserts on, the document id from step 1, and your observations.
+       Do NOT paste the rows into sample_rows -- they are in the file.
+    4. The caretaker sees every open request, catches "we already have a tickets table", and
+       runs one call that builds the table with your observations as column comments, loads
+       the file and registers the delivery. Nothing for you to retype.
+    5. From then on it is Case A: every later export is yours to load.
 
     ## What not to do
 
-    - Never put the file's contents as base64 in a column. It works, and it becomes an expensive
-      bottleneck.
-    - Never delete and reload to "start over". Use `on conflict do update`.
-    - Never mix your own analysis results into the source table. Analysis is its own table or a
-      note that references the source.
+    - Never type rows into add_rows or sample_rows when they exist in a file. That is the
+      19-of-60 path.
+    - Never delete and reload to "start over". A load upserts on the key; the history survives.
+    - Never put a file's contents as base64 in a column, and never mix your own analysis into
+      the source table. Analysis is its own table, or a note that references the source.
+    - Never design tables from a system's API documentation. The trigger is the file in your
+      hands; a schema listing describes what could exist, and tables no data reaches sit in
+      platform.v_abandoned_tables as evidence.
+
+    ## For the caretaker
+
+    `select platform.load_registered_file(<request_id>);` does everything Case B needs:
+    create_shared_table with the convention columns, one parsed column per field plus
+    `raw jsonb`, `source_sha256` and `loaded_at`, the natural key as primary key, the
+    observations as column comments, the request resolved, the file loaded, the delivery
+    registered. Pass `target_table` to choose the name when the near-duplicate guard objects.
+    Loading by hand instead, keep the same shape: empty cells become null, never an empty
+    string; `on conflict (<key>) do update`; statements of 1,000-2,000 rows (larger ones drop
+    Studio's connection); index the columns people filter on; `platform.register_delivery(...)`
+    afterwards; and comment every column -- the next agent reads the comments, not your session.
     $md$,
-      '1.0.0', 'skillhub', 'MIT',
-      '{loading,etl,source-system,xlsx,house-standard}', 'public', 'published'
-    )
-    on conflict (slug, version) do update
-      set skill_md = excluded.skill_md, description = excluded.description,
-          version = excluded.version, updated_at = now();
+      '1.1.0', 'skillhub', 'MIT',
+      '{loading,etl,source-system,csv,xlsx,house-standard}', 'public', 'published'
+    );
   end if;
+  update public.skill_library
+     set superseded_by = '1.1.0', updated_at = now()
+   where slug = 'load-from-source-system' and version <> '1.1.0' and superseded_by is null;
 end $do$;;
 
 grant select on all tables in schema platform to anon, authenticated, service_role;

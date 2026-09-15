@@ -190,13 +190,13 @@ const TOOLS: Tool[] = [
   {
     name: "skillhub_request_structure",
     description:
-      "Ask for somewhere to put structured data. Two cases, and the second is the one people miss: no table fits at all, OR a table fits but is MISSING A FIELD you need -- ask for the column, do not drop the field and do not retire the source that still holds it. Use it the moment you notice you are about to lose something because there is nowhere to put it: say what the data is for, list the fields, and attach the rows you are holding so they survive the wait. You cannot create tables yourself -- that keeps the data model deliberate -- but the caretaker sees every request and is the only one who can tell that two people asked for the same thing. It answers with existing tables and other open requests that look related: read them, because a column on something that exists beats a table beside it.",
+      "Ask for somewhere to put structured data. Two cases, and the second is the one people miss: no table fits at all, OR a table fits but is MISSING A FIELD you need -- ask for the column, do not drop the field and do not retire the source that still holds it. Use it the moment you notice you are about to lose something because there is nowhere to put it: say what the data is for and list the fields. If the rows are in a file, upload it first (skillhub_upload_url) and pass document_id and natural_key -- the caretaker loads it when building the table. Attach sample_rows only for a handful of rows that exist in no file. You cannot create tables yourself -- that keeps the data model deliberate -- but the caretaker sees every request and is the only one who can tell that two people asked for the same thing. It answers with existing tables and other open requests that look related: read them, because a column on something that exists beats a table beside it.",
     inputSchema: obj({
       purpose: str("What the data is for, in a sentence. The decision between a column and a new table is made on this, not on the field names."),
       fields: { type: "array", items: { type: "string" },
         description: "The fields you need, e.g. [\"supplier\",\"audit_date\",\"score\",\"deviations\",\"status\",\"auditor\"]." },
       sample_rows: { type: "array", items: { type: "object" },
-        description: "The rows you are holding, as objects. At most 200 -- more than that is a delivery for the caretaker." },
+        description: "A few rows that exist in NO file, as objects, at most 200. Rows from a file are never pasted here: skillhub_upload_url, then document_id." },
       suggested_name: str("A name you would give the table, if you have one in mind."),
       observations: { type: "array", items: { type: "string" },
         description: "What you NOTICED about the data, one sentence each, naming the column: sentinel values ('hours_spent 999 means not recorded'), spellings ('status has closed in three casings'), units, blanks. This is the most valuable thing you contribute -- the caretaker's loader writes it into the column comments, so the next agent is warned. Said only in chat it is lost." },

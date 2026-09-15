@@ -466,6 +466,18 @@ caretaker's call takes a `target_table` of its own choosing.
 The agent went from typing 19 rows in three minutes to handing over 60 in one call. The
 knowledge it had went into the store instead of a chat reply. That is the whole change.
 
+**What the first live run showed (demo, 2026-09-15).** Same words, same file, an agent on the
+demo instance. It searched the store first — correctly — found the house standard
+`load-from-source-system` 1.0.0 and followed it. That text was written for a caretaker with
+SQL and said *"the file itself is uploaded to Storage by a person — you cannot upload
+bytes"*, so the agent planned the §19 path from a rule, not from ignorance: rows into
+`sample_rows`, a document record, a skill. The tools carried the new path in their
+descriptions; the skill an agent actually follows carried the old one, and the seed inserted
+a skill only when its slug was absent, so no running instance would ever have received a
+rewrite. Fixed as version 1.1.0 of the skill — the seed adds a version and marks the old one
+superseded, never edits — and `request_structure` no longer invites rows into `sample_rows`
+when a file exists. An agent does what the store says; the store had two answers.
+
 ---
 
 ## What this does not do yet

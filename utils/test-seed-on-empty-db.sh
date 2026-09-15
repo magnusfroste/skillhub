@@ -109,6 +109,15 @@ check "the indexer sees that slug once, and the newest version" \
 q "insert into platform.embeddings(source,id,model,vector,text_hash) values ('skill','seed-two-versions','probe',array_fill(0::real,array[1536])::vector(1536),'x')" >/dev/null
 check "similarity does not fail on a slug with two versions" \
   "select (public.skillhub_similar(to_jsonb(array_fill(0::real,array[1536])),'probe',3) is not null)::text" "true"
+# A document registered without a path -- the normal case, the file lives where it lives --
+# once failed on every call: bucket is NOT NULL with a default, and the function passed an
+# explicit null. Found on the demo 2026-09-15, two attempts, by an agent doing it right.
+check "a document is registered without a path" \
+  "select (public.skillhub_register_document('agent_01','seed-test.csv',7509,'text/csv','0000seed','Written by the empty-database test','laptop') ? 'id')::text" "true"
+check "and it landed in the shared bucket" \
+  "select bucket from public.documents where sha256='0000seed'" "shared"
+check "the loading house standard is at 1.1.0 and the agent path" \
+  "select version || ':' || (skill_md like '%skillhub_upload_url%')::text from platform.v_current_skills where slug='load-from-source-system'" "1.1.0:true"
 check "retiring the note works too" \
   "select (public.skillhub_retire('agent_01','note',(select id::text from public.notes where title='Seed test'),'seed test cleanup') ? 'retired_by')::text" "true"
 

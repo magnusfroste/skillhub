@@ -75,7 +75,7 @@ def main():
     check("supportedVersions includes 2026-07-28 and 2025-03-26", set(["2026-07-28", "2025-03-26"]) <= set(r.get("supportedVersions", [])), str(r.get("supportedVersions")))
     check("capabilities.tools, instructions, ttlMs, cacheScope", "tools" in r.get("capabilities", {}) and bool(r.get("instructions")) and isinstance(r.get("ttlMs"), int) and r.get("cacheScope") in ("public", "private"))
     s, d = call("tools/list", {"_meta": MOD}); r = d.get("result", {})
-    check("tools/list -> 15 tools with ttlMs and cacheScope", s == 200 and len(r.get("tools", [])) == 15 and "ttlMs" in r and "cacheScope" in r, str(list(r.keys()))[:120])
+    check("tools/list -> 17 tools with ttlMs and cacheScope", s == 200 and len(r.get("tools", [])) == 17 and "ttlMs" in r and "cacheScope" in r, str(list(r.keys()))[:120])
     s, d = call("tools/call", {"name": "skillhub_whoami", "arguments": {}, "_meta": MOD})
     check("tools/call whoami with modern _meta answers the same agent", s == 200 and who(d) == legacy_who and d.get("result", {}).get("resultType") == "complete", str(d)[:140])
     s, d = call("tools/call", {"name": "skillhub_whoami", "arguments": {"agent": "agent_01"}, "_meta": MOD})

@@ -176,7 +176,7 @@ begin
     - Never mix your own analysis results into the source table. Analysis is its own table or a
       note that references the source.
     $md$,
-      '1.0.0', 'supabase-easy', 'MIT',
+      '1.0.0', 'skillhub', 'MIT',
       '{loading,etl,source-system,xlsx,house-standard}', 'public', 'published'
     )
     on conflict (slug, version) do update

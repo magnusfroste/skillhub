@@ -1,4 +1,4 @@
-# supabase-easy
+# SkillHub
 
 Self-hosted Supabase for Easypanel, with the Studio **MCP server** opened up behind
 per-person API keys so Hermes (or any MCP client) can read and write the data.

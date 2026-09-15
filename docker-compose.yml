@@ -67,7 +67,7 @@ services:
 
   # Envoy is the default API gateway
   # See: https://github.com/orgs/supabase/discussions/48048
-  # supabase-easy: gateway is Kong, merged from upstream docker-compose.kong.yml.
+  # skillhub: gateway is Kong, merged from upstream docker-compose.kong.yml.
   # Service is named `kong` (not `api-gw`) so Easypanel's Traefik/tunnel alias stays
   # data_supabase_kong; `api-gw` and `envoy` remain as network aliases for upstream configs.
   kong:
@@ -79,7 +79,7 @@ services:
         aliases:
           - api-gw
           - envoy
-      # supabase-easy: join Easypanel's shared network ourselves. Easypanel only attaches a
+      # skillhub: join Easypanel's shared network ourselves. Easypanel only attaches a
       # service there when it has a Domain; a tunnel-only setup has none, and cloudflared
       # (on that network) must still resolve the alias below.
       easypanel:
@@ -93,7 +93,7 @@ services:
     depends_on:
       studio:
         condition: service_healthy
-    # supabase-easy: never publish host ports on an Easypanel host; Traefik/tunnel
+    # skillhub: never publish host ports on an Easypanel host; Traefik/tunnel
     # reach the container port directly.
     expose:
       - "8000"
@@ -119,7 +119,7 @@ services:
       SERVICE_ROLE_KEY_ASYMMETRIC: ${SERVICE_ROLE_KEY_ASYMMETRIC:-}
       DASHBOARD_USERNAME: ${DASHBOARD_USERNAME}
       DASHBOARD_PASSWORD: ${DASHBOARD_PASSWORD}
-      # supabase-easy: per-person MCP keys (see example.env). Kong only sees variables
+      # skillhub: per-person MCP keys (see example.env). Kong only sees variables
       # listed here; kong-entrypoint.sh substitutes $MCP_KEY_xx into kong.yml and drops
       # consumers whose key is empty or unset.
       MCP_KEY_01: ${MCP_KEY_01:-}
@@ -487,7 +487,7 @@ services:
       # Legacy API keys (HS256-signed JWTs)
       SUPABASE_ANON_KEY: ${ANON_KEY}
       SUPABASE_SERVICE_ROLE_KEY: ${SERVICE_ROLE_KEY}
-      # supabase-easy: privat embeddings-endpoint, läst av edge-funktionen `embed`.
+      # skillhub: privat embeddings-endpoint, läst av edge-funktionen `embed`.
       # Sätts i Easypanels Environment; utan dem hoppar funktionen över inbäddning.
       # EMBEDDING_DIM must match platform.embeddings.vector -- vector(1536) by default; see demo/platform_vector.sql to change it
       # från start — se demo/plattform_vektor.sql om modellen ger en annan dimension.
@@ -600,7 +600,7 @@ services:
     container_name: ${CONTAINER_PREFIX:-supabase}-pooler
     image: supabase/supavisor:2.9.12
     restart: unless-stopped
-    # supabase-easy: no host ports (see kong). Reach Postgres via the pooler on the
+    # skillhub: no host ports (see kong). Reach Postgres via the pooler on the
     # docker network, or `docker exec` into db.
     expose:
       - "5432"
@@ -652,14 +652,14 @@ services:
       ]
 
 networks:
-  # supabase-easy: Easypanel's shared network (Traefik and the Cloudflare tunnel live here).
+  # skillhub: Easypanel's shared network (Traefik and the Cloudflare tunnel live here).
   easypanel:
     external: true
 
 volumes:
   db-config:
   deno-cache:
-  # supabase-easy: state lives in named volumes, not inside the git checkout.
+  # skillhub: state lives in named volumes, not inside the git checkout.
   # Easypanel does `git reset --hard` on every deploy.
   db-data:
   storage-data:

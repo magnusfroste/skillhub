@@ -214,8 +214,13 @@ begin
     - Changing `skill_library` other than adding or updating your own skills.
     - Changing policies, roles or privileges.
     $md$,
-      '1.0.0', 'supabase-easy', 'MIT',
+      '1.0.0', 'skillhub', 'MIT',
       '{store,conventions,mcp,hermes,shared-data}', 'public', 'published'
     );
   end if;
 end $do$;
+
+-- The house's own skills were authored as 'supabase-easy', the repository's old name. The
+-- repository is skillhub since 2026-09-14; rows written under the old name are renamed once,
+-- here, so overview and search show the same author the seed now writes.
+update public.skill_library set author_name = 'skillhub' where author_name = 'supabase-easy';

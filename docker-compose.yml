@@ -487,10 +487,10 @@ services:
       # Legacy API keys (HS256-signed JWTs)
       SUPABASE_ANON_KEY: ${ANON_KEY}
       SUPABASE_SERVICE_ROLE_KEY: ${SERVICE_ROLE_KEY}
-      # skillhub: privat embeddings-endpoint, läst av edge-funktionen `embed`.
-      # Sätts i Easypanels Environment; utan dem hoppar funktionen över inbäddning.
-      # EMBEDDING_DIM must match platform.embeddings.vector -- vector(1536) by default; see demo/platform_vector.sql to change it
-      # från start — se demo/plattform_vektor.sql om modellen ger en annan dimension.
+      # skillhub: private embeddings endpoint, read by the edge function `embed`.
+      # Set in Easypanel's Environment; without them the function skips embedding.
+      # EMBEDDING_DIM must match platform.embeddings.vector -- vector(1536) by default;
+      # see demo/platform_vector.sql for another dimension.
       EMBEDDING_URL: ${EMBEDDING_URL:-}
       EMBEDDING_KEY: ${EMBEDDING_KEY:-}
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-}

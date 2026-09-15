@@ -376,6 +376,36 @@ own prompt because nothing enforces them:
 - **It is still a language model with a large key.** The DDL guard applies to it, but nothing
   stops it dropping a table. Confirm before anything irreversible; never delete to start over.
 
+## 19. A file of rows is handed over, not keyed in
+
+Measured 2026-09-15, same synthetic export of 61 support tickets — with a duplicate key, six
+spellings of "closed", and a `999` sentinel in the hours column — given to two doors with the
+same words: *"there is an export like this every month; put it in so we can analyse it."*
+
+**Through the agent's tools:** the agent registered the file, asked for a table with a sound
+design, and *noticed both traps* — it told the user about the casing and the sentinel. Then
+it wrote them nowhere: no note, no skill, and column comments are not its to write. The
+caretaker built the table from the request, which did not carry the rules. In its next
+session the agent loaded rows by re-keying them through the model, three or four per call,
+and stopped at 19 of 60. Six sentinel rows sit in the table as real hours. Both business
+questions would answer wrong, quietly.
+
+**Through the caretaker:** one session, under four minutes, no human. Sixty rows with the
+original row and the file's hash on each; a unique key that made the duplicate impossible;
+the status kept raw *and* normalised, the hours kept raw *and* a valid column that is null
+where the source said 999; comments on all four columns and on the table saying what one
+row is and how to read it; the delivery registered; a public note with the reading rules.
+Asked the two questions through the door afterwards, an ordinary agent got both exactly
+right.
+
+The rows were never the hard part. What the agent door loses is what makes them usable next
+month — and the knowledge that would have saved it was in the agent's own reply, twice.
+
+So: an agent **hands over** a file of rows — registers it and says what it noticed — and the
+caretaker **loads** it. The placement rule does not yet say this; the agent followed the rule
+it had and did the wrong kind of work well. Whether the request should carry the agent's
+observations as a field, or the rule should simply forbid re-keying, is an open decision.
+
 ---
 
 ## What this does not do yet

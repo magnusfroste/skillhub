@@ -45,7 +45,7 @@ awk '{
 
 # Remove empty key-auth credentials (unconfigured opaque keys)
 sed -i '/^[[:space:]]*- key:[[:space:]]*$/d' "$KONG_DECLARATIVE_CONFIG"
-# supabase-easy: also drop credentials whose variable was never substituted (missing
+# skillhub: also drop credentials whose variable was never substituted (missing
 # from the container env); otherwise the literal text "$MCP_KEY_03" would be a valid key.
 sed -i '/^[[:space:]]*- key:[[:space:]]*\$[A-Za-z_][A-Za-z_0-9]*[[:space:]]*$/d' "$KONG_DECLARATIVE_CONFIG"
 

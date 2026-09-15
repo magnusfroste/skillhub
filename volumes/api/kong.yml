@@ -14,7 +14,7 @@ consumers:
     keyauth_credentials:
       - key: $SUPABASE_SERVICE_KEY
       - key: $SUPABASE_SECRET_KEY
-  # supabase-easy: per-person MCP keys. Consumer agent_NN is keyed by MCP_KEY_NN in the
+  # skillhub: per-person MCP keys. Consumer agent_NN is keyed by MCP_KEY_NN in the
   # Easypanel environment and is the agent's default identifier in the data (owner column); an empty or unset key is stripped by kong-entrypoint.sh, leaving a
   # consumer with no credential (unusable).
   - username: agent_01
@@ -56,7 +56,7 @@ acls:
     group: anon
   - consumer: service_role
     group: admin
-  # supabase-easy: group 'mcp' is only allowed on the /mcp route
+  # skillhub: group 'mcp' (agent keys) is allowed on /skillhub only; /mcp -- the raw SQL door -- is 'admin' alone since 2026-09-12
   - consumer: agent_01
     group: mcp
   - consumer: agent_02
@@ -504,7 +504,7 @@ services:
             # which has thirteen tools including skillhub_query for aggregation.
             - admin
 
-  ## supabase-easy: husets egen MCP-server (edge-funktionen `skillhub`).
+  ## skillhub: the house's own MCP server (the edge function `skillhub`).
   ## Samma nyckelkontroll som /mcp. Kongs key-auth sätter X-Consumer-Username
   ## på vägen upp, vilket ger funktionen en verifierad agent_NN att skriva som.
   ## /lager finns kvar som alias tills alla agenter bytt; ta bort det sedan.
@@ -529,7 +529,7 @@ services:
             - admin
             - mcp
 
-  ## supabase-easy: inbäddningsjobbet. Bara `admin` (service_role) — agenternas
+  ## skillhub: the embedding job. `admin` (service_role) only -- the agents'
   ## nycklar ska inte kunna trigga det, och pg_cron når funktionen internt utan Kong.
   - name: embed-job
     _comment: 'POST /embed -> http://functions:9000/embed'

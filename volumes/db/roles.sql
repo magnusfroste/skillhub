@@ -6,6 +6,6 @@ ALTER USER pgbouncer WITH PASSWORD :'pgpass';
 ALTER USER supabase_auth_admin WITH PASSWORD :'pgpass';
 ALTER USER supabase_functions_admin WITH PASSWORD :'pgpass';
 ALTER USER supabase_storage_admin WITH PASSWORD :'pgpass';
--- supabase-easy: upstream never sets this role's password, which makes Studio's
+-- skillhub: upstream never sets this role's password, which makes Studio's
 -- MCP list_tables fail with 'password authentication failed'.
 ALTER USER supabase_read_only_user WITH PASSWORD :'pgpass';

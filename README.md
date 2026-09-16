@@ -122,6 +122,10 @@ data has to be read" is written down. A different embedding dimension: empty
 - **`POSTGRES_PASSWORD` is burned into the database roles at first init.** Changing it in
   the panel later changes nothing until `sh utils/db-passwd.sh` rewrites the roles too.
 - **Invisible Unicode in a pasted variable name** makes Kong ignore it. Retype the name.
+- **A deploy that changes the tool list does not reach a running agent.** Hermes reads
+  `tools/list` when its gateway starts and keeps it (the list is also advertised as cacheable
+  for an hour). The server answers seventeen tools while the agent still sees fifteen, and
+  it will tell you so. Restart the agent after such a deploy.
 
 ## Updating from upstream
 

@@ -176,3 +176,5 @@ Two more worth asking once, because each exercises a wall:
   `EMBEDDING_URL` and `EMBEDDING_KEY` are empty. They are on purpose; set them.
 - HTTP 403 `error code: 1010` → the edge rejected your User-Agent before the gateway saw the
   request. Send one.
+- An agent reports fewer tools than `tools/list` returns, or an old parameter set → it is
+  holding the list it fetched when its gateway started. Restart the agent; the server is fine.

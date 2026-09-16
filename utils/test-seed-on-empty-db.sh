@@ -45,7 +45,9 @@ done
 [ $stable -ge 5 ] || { echo "   database never became stably ready"; exit 1; }
 echo "   ready and stable (${n}s)"
 
-q() { docker exec "$NAME" psql -U postgres -At -c "$1"; }
+# client_min_messages: a NOTICE ("index does not exist, skipping") is printed before the
+# answer, and head -1 then reads the notice instead of the result.
+q() { docker exec -e PGOPTIONS="-c client_min_messages=warning" "$NAME" psql -U postgres -At -c "$1"; }
 
 echo "2. first seed"
 DB_CONTAINER="$NAME" DB_USER=postgres sh "$REPO/utils/seed.sh" | sed 's/^/   /'
@@ -140,7 +142,26 @@ check "the dimension can be changed by function while the table is empty" \
   "select left(platform.set_vector_dim(1024), 41)" "The vector store is now vector(1024) with"
 check "and similar() follows the dimension" \
   "select count(*) from platform.similar(array_fill(0::real,array[1024])::vector, 'probe', 3)" "0"
-q "select platform.set_vector_dim(1536)" >/dev/null
+
+# What a virgin instance does on a model that is not 1,536-dimensional -- the client's is
+# 4,096 (Qwen3-Embedding-8B). The seed builds the table at 1,536 with an HNSW index; the
+# indexer's first run probes, calls set_vector_dim, and everything downstream has to follow,
+# INCLUDING the next boot's seed. platform.sql created that index unconditionally until
+# 2026-09-16 and the seed then failed on the first file, skipping every file after it.
+check "a fresh install moves to 4,096: no index, because HNSW stops at 4,000" \
+  "select (platform.set_vector_dim(4096) like '%NO index%')::text || ':' || (to_regclass('platform.embeddings_vector_idx') is null)::text" "true:true"
+DB_CONTAINER="$NAME" DB_USER=postgres sh "$REPO/utils/seed.sh" 2>&1 | grep -q FAILED \
+  && { printf "   %-46s %s\n" "the seed runs again at 4,096 without failing" "FAILED -- see utils/seed.sh output"; fail=1; } \
+  || printf "   %-46s %s\n" "the seed runs again at 4,096 without failing" "ok"
+check "a 4,096 vector goes in and comes back out" \
+  "select public.embed_save_chunks('schema','notes','probe', jsonb_build_array(to_jsonb(array_fill(0.01::real,array[4096]))), to_jsonb(array['x']), 'h') ? 'chunks'" "t"
+check "and the tools answer at that dimension" \
+  "select jsonb_array_length(public.skillhub_similar(to_jsonb(array_fill(0.01::real,array[4096])),'probe',5))::text || ':' || (public.skillhub_overview()->'index'->>'table_dimension')" "1:4096"
+q "truncate platform.embeddings" >/dev/null
+check "between 2,000 and 4,000 it is a half-precision index" \
+  "select (platform.set_vector_dim(3072) like '%half-precision%')::text || ':' || (to_regclass('platform.embeddings_vector_idx') is not null)::text" "true:true"
+check "and back down to 1,536 the ordinary index returns" \
+  "select (platform.set_vector_dim(1536) like '%with an HNSW index%')::text || ':' || (to_regclass('platform.embeddings_vector_idx') is not null)::text" "true:true"
 # Rebuilding the index is the caretaker's one legitimate delete, and it has to say why --
 # the sentence goes in the change log, because "search went quiet for ten minutes" needs an
 # answer later. Written 2026-09-16 after doing the same thing by hand in the wrong order.

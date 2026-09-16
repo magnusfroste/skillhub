@@ -24,8 +24,15 @@ sh utils/test-seed-on-empty-db.sh
 
 Raises an empty Postgres from the same image the stack uses, seeds it, seeds it **again** (the
 seed runs on every boot, so a second run has to be a no-op), and then checks that the store
-*answers* — sixteen checks, from "the tables carry the convention columns" to "a skill
+*answers* — forty-six checks, from "the tables carry the convention columns" to "a skill
 published through the gate can be retired by its author and ends up deprecated, not deleted".
+
+Among them, the path a first install takes on a model that is not 1,536-dimensional, because
+that is what a client's own embedder usually is: the table is built at 1,536 with an HNSW
+index, the indexer's first run probes and calls `platform.set_vector_dim`, and everything
+downstream has to follow — including **the next boot's seed**, which is where this failed
+until 2026-09-16. Checked at 4,096 (no index, exact scan), at 3,072 (half-precision index)
+and back at 1,536, with a seed run in the middle and the tools answering at each.
 
 Expect: `PASS -- an empty database and this repo give a working data store.`
 

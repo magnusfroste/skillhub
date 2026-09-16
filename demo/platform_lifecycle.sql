@@ -265,9 +265,17 @@ begin
 
   out_text := out_text || E'\nNEW IN THE LIBRARY\n';
   n := 0;
-  for r in select slug, name, author_name from public.skill_library
-            where created_at > now() - (days||' days')::interval order by created_at
-  loop out_text := out_text || format(E'  %s -- %s (%s)\n', r.slug, r.name, r.author_name); n := n + 1; end loop;
+  -- One line per slug, at its current version: four versions of one skill in a day is one
+  -- new skill, not four (report on the demo, 2026-09-16).
+  for r in select s.slug, s.name, s.author_name, s.version,
+                  (select count(*) from public.skill_library x where x.slug = s.slug
+                     and x.created_at > now() - (days||' days')::interval) as versions
+             from platform.v_current_skills s
+            where exists (select 1 from public.skill_library x where x.slug = s.slug
+                           and x.created_at > now() - (days||' days')::interval)
+            order by s.created_at
+  loop out_text := out_text || format(E'  %s -- %s (%s%s)\n', r.slug, r.name, r.author_name,
+         case when r.versions > 1 then format(', %s versions, now %s', r.versions, r.version) else '' end); n := n + 1; end loop;
   if n = 0 then out_text := out_text || E'  nothing new\n'; end if;
 
   out_text := out_text || E'\nNEW TABLES\n';

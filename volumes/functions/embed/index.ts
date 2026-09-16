@@ -26,7 +26,21 @@
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "http://api-gw:8000";
 const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
-const EMBEDDING_URL = Deno.env.get("EMBEDDING_URL") ?? "";
+// The full endpoint, however it was written down. An OpenAI-compatible base URL comes in
+// three shapes and all three were pasted into a panel here (2026-09-16): the host on its
+// own, the host with /v1, and the complete path. The first two answer 404, which reaches
+// the store as "the endpoint answered 404" and nothing about why. So normalise instead.
+function embeddingsEndpoint(raw: string): string {
+  const u = raw.trim().replace(/\/+$/, "");
+  if (!u) return "";
+  if (/\/embeddings$/.test(u)) return u;          // already the endpoint
+  if (/\/v\d+$/.test(u)) return `${u}/embeddings`; // the usual "base URL"
+  try {                                           // the host on its own
+    if (new URL(u).pathname === "/") return `${u}/v1/embeddings`;
+  } catch { /* not a URL we can parse; leave it to the fetch to complain */ }
+  return u;                                       // some other path: assume it was meant
+}
+const EMBEDDING_URL = embeddingsEndpoint(Deno.env.get("EMBEDDING_URL") ?? "");
 const EMBEDDING_KEY = Deno.env.get("EMBEDDING_KEY") ?? "";
 const EMBEDDING_MODEL = Deno.env.get("EMBEDDING_MODEL") ?? "text-embedding-3-small";
 

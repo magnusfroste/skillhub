@@ -58,7 +58,12 @@ language sql stable security definer set search_path = public, platform as $$
                         and (r.status = 'open' or r.resolved_at > now() - interval '30 days')),
     -- Whether search by meaning is on, and how the last indexing run went. A silent cron
     -- was the alternative, and its failure mode is "my colleague cannot find what I wrote".
-    'index', public.embedder_status());
+    'index', public.embedder_status(),
+    -- The caretaker holds the service key and comes through the same door as everyone else.
+    -- Rather than a second tool it has to know about, the operational view arrives inside
+    -- the one call every agent makes first. Nobody else sees this key at all.
+    'caretaker', case when skillhub_overview.agent = 'service_role'
+                      then platform.health() end);
 $$;
 
 -- Passes the verified agent through to platform.search so private rows stay private, and

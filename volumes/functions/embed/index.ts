@@ -358,7 +358,12 @@ Deno.serve(async (req: Request) => {
   // edge runtime and pg_net both get their answer.
   const budgetMs = Math.min(Math.max(Number(url.searchParams.get("budget") ?? "60"), 1), 240) * 1000;
   const deadline = Date.now() + budgetMs;
+  const started = Date.now();
   const now = () => new Date().toISOString();
+  // One row per run, kept for seven days. platform.embedder holds the LAST run, which
+  // cannot answer "has this been failing all night and recovering by morning".
+  const note = (p: Record<string, unknown>) =>
+    rpc("index_run_save", { p: { ...p, seconds: Number(((Date.now() - started) / 1000).toFixed(2)) } }).catch(() => {});
 
   if (!EMBEDDING_URL) {
     try { await rpc("embedder_save", { p: { status: "off", last_error: null, last_run: now() } }); } catch { /* the message below still stands */ }
@@ -379,6 +384,7 @@ Deno.serve(async (req: Request) => {
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     try { await rpc("embedder_save", { p: { url: EMBEDDING_URL, model: EMBEDDING_MODEL, status: "error", last_run: now(), last_error: message } }); } catch { /* reported below anyway */ }
+    await note({ model: EMBEDDING_MODEL, error: message });
     return Response.json({ status: "error", message }, { status: 500 });
   }
 
@@ -422,6 +428,9 @@ Deno.serve(async (req: Request) => {
       last_embedded: saved, last_failed: errors.length, last_truncated: truncated,
       last_error: ratioNote ?? errors[0] ?? null } });
 
+    await note({ model: s.model, dimension: s.dimension, objects, embedded: saved, chunks,
+                 truncated, failed: errors.length, requests, pruned, error: ratioNote ?? errors[0] ?? null });
+
     return Response.json({
       status: "done",
       model: s.model, dimension: s.dimension, max_chars_per_chunk: s.max_chars, limit_from: s.limit_source,
@@ -438,6 +447,7 @@ Deno.serve(async (req: Request) => {
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     try { await rpc("embedder_save", { p: { status: "error", last_run: now(), last_error: message } }); } catch { /* nothing more to do */ }
+    await note({ model: EMBEDDING_MODEL, error: message });
     return Response.json({ status: "error", message }, { status: 500 });
   }
 });

@@ -74,8 +74,8 @@ check "the index-on-write trigger is installed" \
 # live in the edge function (they talk to Storage), and skillhub_load_rows is SQL with no
 # tool of its own -- the loader calls it. Counting SQL, not tools, is what this database
 # receipt can verify.
-check "the sixteen skillhub_ functions exist" \
-  "select count(*) from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname='public' and p.proname like 'skillhub_%'" "16"
+check "the seventeen skillhub_ functions exist" \
+  "select count(distinct proname) from pg_proc where proname like 'skillhub\\_%'" "17"
 check "rules are readable" \
   "select (public.skillhub_rules() ? 'placement_rule')::text" "true"
 check "overview answers" \
@@ -197,6 +197,27 @@ check "the prune removes it" \
   "select public.embed_prune() >= 1" "t"
 check "and then the vector is gone" \
   "select count(*) from platform.embeddings where model='probe' and source='note'" "0"
+# The caretaker's operating surface: one call that says ok, attention or broken, with the
+# call to fix each thing. Everything it reads had a view a day earlier; what was missing was
+# anything that ASKED, which is why every fault on 2026-09-16 was found by happening to look.
+check "health answers, and says what is waiting" \
+  "select (platform.health() ? 'verdict')::text || ':' || (platform.health() ? 'checks')::text || ':' || (jsonb_array_length(platform.health()->'checks') >= 4)::text" "true:true:true"
+check "a store with no backup and no embedder wants attention, not alarm" \
+  "select platform.health()->>'verdict'" "attention"
+check "every check that wants something carries the call that does it" \
+  "select bool_and((c->>'run') is not null) from jsonb_array_elements(platform.health()->'checks') c where c->>'state' <> 'ok'" "t"
+# An agent handed a list works through it. So the safe calls and the ones that change
+# something are separate keys, and only the safe ones are a list.
+check "what only looks is a list; what changes is a decision" \
+  "select (jsonb_array_length(platform.health()->'look') > 0)::text || ':' || bool_and((d->>'changes') is not null)::text from jsonb_array_elements(platform.health()->'decide') d" "true:true"
+check "the caretaker sees it inside the tool every agent runs" \
+  "select (public.skillhub_overview('service_role')->'caretaker' ? 'verdict')::text || ':' || (public.skillhub_overview('agent_01')->>'caretaker' is null)::text" "true:true"
+q "select public.index_run_save(jsonb_build_object('model','probe','dimension',1536,'objects',3,'embedded',3,'chunks',4,'truncated',0,'failed',0,'requests',1,'pruned',0,'seconds',0.4))" >/dev/null
+check "a run is remembered, so flapping is answerable" \
+  "select count(*)::text || ':' || (platform.health()->'checks' @> '[{\"check\":\"indexing, last 24h\"}]')::text from platform.index_runs" "1:true"
+q "select public.backup_record('content','/root/.skillhub-backups/probe',1024,'written by the empty-database test')" >/dev/null
+check "a recorded backup turns that check green" \
+  "select c->>'state' from jsonb_array_elements(platform.health()->'checks') c where c->>'check'='backup'" "ok"
 check "retiring the note works too" \
   "select (public.skillhub_retire('agent_01','note',(select id::text from public.notes where title='Seed test'),'seed test cleanup') ? 'retired_by')::text" "true"
 

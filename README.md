@@ -117,6 +117,18 @@ vLLM's `/v1/models`, or by trying. An embedder built for RAG at 512 tokens works
 at 8k. What it found and how the last run went is `skillhub_overview` → `index`. To switch
 models: `truncate platform.embeddings;` — the next run re-probes and rebuilds.
 
+## Running it
+
+```sh
+sh utils/health.sh https://<domain> "$SERVICE_ROLE_KEY"     # add --quiet for cron
+```
+
+One verdict — ok, attention or broken — with every check's detail and the call that deals
+with it; non-zero exit only on broken. The caretaker sees the same inside
+`skillhub_overview`, and the house standard `caretaker-operations` says what to check, what
+to do and what to leave alone. Backups: `sh utils/backup-content.sh`, which records itself
+so the store stops asking. Seven days of indexing runs are in `platform.index_runs`.
+
 ## Traps
 
 - **Behind Cloudflare, a client must send a User-Agent.** Python's default gets

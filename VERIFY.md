@@ -15,6 +15,18 @@ this order the first time; run the ones that apply after any change.
 
 Then one thing no script can do for you: ask an agent a question whose answer you know.
 
+And afterwards, for as long as the store is running:
+
+```sh
+sh utils/health.sh https://<store> "$SERVICE_ROLE_KEY"            # a person
+sh utils/health.sh https://<store> "$SERVICE_ROLE_KEY" --quiet    # cron: silent unless broken
+```
+
+One call, one verdict, and for each check what is true and the call that deals with it. It
+exits non-zero **only** when something is broken — work waiting is not an incident, and a
+check that fires on work stops being read. The caretaker sees the same thing inside
+`skillhub_overview`, because it holds the service key.
+
 ---
 
 ## 0. Before you install: `check-embedder.sh`

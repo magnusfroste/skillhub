@@ -579,6 +579,42 @@ The general shape: **anything derived from content inherits the content's permis
 inherits them at the moment of reading, not at the moment of writing.** A cache that
 remembers what something used to be allowed to be is a leak with a plausible explanation.
 
+## 24. An operating surface, because nothing was asking
+
+By 2026-09-16 the store could answer every operational question. `v_index_status`,
+`v_embed_queue`, `v_action_items`, `v_going_stale`, `v_abandoned_tables`, `v_caveats`,
+`v_structure_requests`, the change log — all of it was there, and every fault found that
+day was found because somebody happened to look: a house standard that had gone stale, a
+cron that swallowed its own failures, a skill that grew four sections a boot for two weeks,
+vectors that outlived the objects they pointed at, chunks cut without a number moving.
+That is not an operating model. It is luck with a good memory.
+
+So: `platform.health()` — one call, a verdict of ok, attention or broken, and for each
+check what is true and the call that deals with it. `utils/health.sh` runs it from a
+monitor and exits non-zero **only** on broken, because a check that fires on work-in-
+progress stops being read. `platform.index_runs` keeps seven days of runs, so "has this
+been failing at night and recovering by morning" has an answer. `platform.backups` records
+what `utils/backup-content.sh` did, so the question asked after an incident was answered
+before one.
+
+Two decisions inside it are worth naming.
+
+**The caretaker gets it through the tool it already runs.** `skillhub_overview` returns a
+`caretaker` section when the caller holds the service key, and nothing when it does not. No
+second door, no separate thing to remember. The agent that reads the store at the start of
+a session reads how the store is running in the same breath.
+
+**Looking and changing are different keys.** An agent handed a list works through the list.
+So the safe calls — every one a `select` — are a list called `look`, and the few that change
+something are `decide`, each with a sentence saying what it changes. A store that says `ok`
+needs nothing, and the surface says so in those words, because the failure mode of giving an
+admin key a to-do list is an agent tidying a table that was next month's report.
+
+And a house standard, `caretaker-operations`, tagged like the others so it is found by
+searching rather than by being told: what to check, the four things a caretaker actually
+does, and what to leave alone. The cheapest guard against improvisation is not a rule that
+forbids — it is a ready answer for the thing that was about to be invented.
+
 ---
 
 ## What this does not do yet

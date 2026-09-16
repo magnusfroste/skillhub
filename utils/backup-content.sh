@@ -44,6 +44,16 @@ select relname, n_live_tup from pg_stat_user_tables
  where schemaname in ('public','platform') and n_live_tup > 0 order by 2 desc;" > "$OUT/inventory.txt"
 
 chmod 600 "$OUT"/* 2>/dev/null || true
+
+# Record it, so the store can answer the question that gets asked after an incident rather
+# than before one. platform.health() nags until this row exists and stops once it does.
+BYTES="$(du -sb "$OUT" 2>/dev/null | awk '{print $1}')"
+# Single quotes, not dollar quoting: $$ inside a double-quoted shell string is the PID,
+# which made the first version of this line a syntax error that nobody saw (2026-09-16).
+docker exec -i "$CONTAINER" psql -U "$USER_" -d "$DB" -At -c \
+  "select public.backup_record('content', '$OUT', ${BYTES:-0}, 'utils/backup-content.sh')" >/dev/null 2>&1 \
+  || echo "  (the backup was not recorded in platform.backups -- the files are written all the same)"
+
 echo "Wrote:"
 ls -lh "$OUT" | awk 'NR>1{print "  "$9"  "$5}'
 echo

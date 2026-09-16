@@ -267,6 +267,9 @@ check "an index cut at another chunk size is reported, with the rebuild as a dec
 q "select public.embed_save_chunks('schema','notes','probe', jsonb_build_array(to_jsonb(array_fill(0.1::real,array[1536]))), to_jsonb(array['x']), 'h', 6900)" >/dev/null
 check "and a drift inside a quarter is not" \
   "select count(*) from jsonb_array_elements(platform.health()->'checks') c where c->>'check'='chunk size'" "0"
+q "select public.embed_save_chunks('schema','notes','probe', jsonb_build_array(to_jsonb(array_fill(0.1::real,array[1536]))), to_jsonb(array['x']), 'h')" >/dev/null
+check "a vector whose chunk size was never recorded asks for one rebuild, not a guess" \
+  "select (select c->>'state' from jsonb_array_elements(platform.health()->'checks') c where c->>'check'='chunk size') || ':' || (select count(*) from jsonb_array_elements(platform.health()->'decide') d where d->>'call' like '%recording the chunk size%')::text" "attention:1"
 q "truncate platform.embeddings; delete from platform.embedder" >/dev/null
 check "retiring the note works too" \
   "select (public.skillhub_retire('agent_01','note',(select id::text from public.notes where title='Seed test'),'seed test cleanup') ? 'retired_by')::text" "true"

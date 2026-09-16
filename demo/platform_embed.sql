@@ -194,13 +194,11 @@ alter table platform.embedder add column if not exists last_truncated int;
 alter table platform.embedder add column if not exists chars_per_token numeric;
 comment on table platform.embedder is 'What the indexer found out about the embedding endpoint, and how its last run went. Written by the indexer; read by skillhub_overview.';
 
--- Vectors written before chunk_chars existed were cut at the size the embedder row still
--- holds: the seed runs at boot, before the indexer has probed with any new setting. Once.
-update platform.embeddings
-   set chunk_chars = (select max_chars from platform.embedder where id = 1)
- where chunk_chars is null
-   and exists (select 1 from platform.embedder where id = 1 and max_chars is not null);
-
+-- Vectors written before chunk_chars existed are left NULL: unknown, not guessed. The first
+-- version filled them from the embedder row on the assumption that the seed runs before
+-- the indexer probes a new setting -- and on dev the setting had already been applied, so 63
+-- vectors cut at 21,600 were recorded as 6,700 and health said ok. A rebuild records the
+-- truth, and health asks for one.
 create or replace function public.embedder_save(p jsonb) returns jsonb
 language plpgsql security definer set search_path = public, platform as $$
 begin

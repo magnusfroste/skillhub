@@ -152,6 +152,14 @@ begin
       into waiting_n, emb_rows
       from platform.embeddings
      where chunk_chars is not null and abs(chunk_chars - e.max_chars) > 0.25 * e.max_chars;
+    select count(*) into runs_24h from platform.embeddings where chunk_chars is null;
+    if waiting_n = 0 and runs_24h > 0 then
+      cks := cks || jsonb_build_object('check','chunk size','state','attention',
+        'detail', format('%s vector(s) were written before the store recorded the chunk size they were cut at, so it cannot tell whether they match the %s characters in force now. Rebuild once: afterwards every vector carries its size and this check says something only when it matters.',
+                         runs_24h, e.max_chars),
+        'run', 'select platform.reindex(''recording the chunk size of every vector'');',
+        'changes', 'Empties the vector index and rebuilds it at the chunk size in force. Nothing but the index is touched and nothing is lost; search by meaning is thin for the minutes it takes.');
+    end if;
     if waiting_n > 0 then
       cks := cks || jsonb_build_object('check','chunk size','state','attention',
         'detail', format('The store now cuts text into chunks of %s characters, but %s vector(s) were cut at %s. Search still works; long content is matched in pieces of the old size, so a passage deep in a long text can be missed, until the index is rebuilt. Short objects are one chunk either way and come back unchanged.',

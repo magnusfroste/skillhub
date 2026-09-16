@@ -43,6 +43,16 @@ declare
   rid text;
   txt text;
 begin
+  -- An update that changed nothing but its own timestamp is not a change. Until 2026-09-16
+  -- every boot re-applied the house rules to rows that already held them, and the log
+  -- recorded each one: of 242 writes in a day, 223 were the store telling itself what it
+  -- already knew. The caretaker, asked how the store was doing, flagged it as a write loop
+  -- worth investigating -- correctly -- and that is what a log full of noise costs: real
+  -- events read as suspicious and suspicious ones get lost.
+  if tg_op = 'UPDATE'
+     and (to_jsonb(new) - array['updated_at','updated_by']) = (to_jsonb(old) - array['updated_at','updated_by']) then
+    return null;
+  end if;
   r := coalesce(new, old);
   begin a := coalesce(to_jsonb(r) ->> 'updated_by', to_jsonb(r) ->> 'created_by', to_jsonb(r) ->> 'owner', to_jsonb(r) ->> 'author_name'); exception when others then a := null; end;
   begin vis := to_jsonb(r) ->> 'visibility'; exception when others then vis := null; end;
@@ -908,20 +918,52 @@ grant select on all tables in schema platform to anon, authenticated, service_ro
 -- and carried the 'n' flag, under which '.' stops at a newline -- so nothing was stripped
 -- and the skill grew by four sections on every boot: 201,433 characters on dev after
 -- sixteen boots, found when the chunker produced sixteen chunks headed "## Overview".
-update public.skill_library
-   set skill_md = regexp_replace(skill_md, E'\nPLACEMENT RULE -- run platform\\.search\\(\\) first.*$', '')
-                  || E'\n' || platform.placement_rule() || E'\n\n'
-                  || E'## Overview\n\n'
-                  || E'The `platform` schema is readable by every agent and answers "what is here":\n'
-                  || E'- `select * from platform.overview()` -- seven numbers, run it first in a new session.\n'
-                  || E'- `select * from platform.search(''keywords'')` -- find before you create, and before you answer.\n'
-                  || E'- `select * from platform.v_catalog` -- every table, its size, whether it follows the convention.\n'
-                  || E'- `select * from platform.v_flow limit 20` -- what other agents just did.\n'
-                  || E'- `select * from platform.v_action_items` -- what needs tidying. Take one when you have time.\n'
-                  || E'- `select * from platform.v_caveats` -- what the log does not prove.\n\n'
-                  || E'A DDL guard refuses a new table in public that lacks the convention columns, and the\n'
-                  || E'error tells you what to run instead. The guard is help, not an accusation: if you hit it,\n'
-                  || E'you probably thought "table" when the answer was "note".\n',
-       version = '2.0.0',
-       updated_at = now()
- where slug = 'store-conventions';
+-- The conventions skill is assembled from sections, one per file that owns one: the
+-- placement rule here, lifecycle in platform_lifecycle.sql, house standards in
+-- platform_loading.sql. Each file replaces ITS section in place and writes only when the
+-- result differs.
+--
+-- Until 2026-09-16 each file stripped everything from its heading to the END and appended
+-- its own section again, and each set its own version number. The text came out the same
+-- after the last file -- but every step in between was a real change, so every boot logged
+-- four updates, walked the version 2.2.0 -> 2.0.0 -> 2.1.0 -> 2.2.0, and moved updated_at.
+-- A caretaker asked how the store was doing called it a write loop, which is what it was.
+-- Positional, not regexp_replace: the replacement string of regexp_replace interprets \1
+-- and &, and these sections are prose.
+create or replace function platform.put_section(md text, start_marker text, next_markers text[], content text)
+returns text language plpgsql immutable as $f$
+declare st int; en int; p int; m text;
+begin
+  st := position(start_marker in md);
+  if st = 0 then return md || content; end if;
+  en := length(md) + 1;
+  foreach m in array coalesce(next_markers, '{}'::text[]) loop
+    p := position(m in substr(md, st + 1));
+    if p > 0 and st + p < en then en := st + p; end if;
+  end loop;
+  return substr(md, 1, st - 1) || content || substr(md, en);
+end $f$;
+comment on function platform.put_section(text, text, text[], text) is 'Replace the section of a text that begins with start_marker and runs to the next of next_markers (or the end) -- or append it when absent. The seed assembles the conventions skill with it.';
+
+with n as (
+  select platform.put_section(skill_md,
+           E'\nPLACEMENT RULE -- run platform.search() first',
+           array[E'\n## Lifecycle and files', E'\n## House standards'],
+           E'\n' || platform.placement_rule() || E'\n\n'
+           || E'## Overview\n\n'
+           || E'The `platform` schema is readable by every agent and answers "what is here":\n'
+           || E'- `select * from platform.overview()` -- seven numbers, run it first in a new session.\n'
+           || E'- `select * from platform.search(''keywords'')` -- find before you create, and before you answer.\n'
+           || E'- `select * from platform.v_catalog` -- every table, its size, whether it follows the convention.\n'
+           || E'- `select * from platform.v_flow limit 20` -- what other agents just did.\n'
+           || E'- `select * from platform.v_action_items` -- what needs tidying. Take one when you have time.\n'
+           || E'- `select * from platform.v_caveats` -- what the log does not prove.\n\n'
+           || E'A DDL guard refuses a new table in public that lacks the convention columns, and the\n'
+           || E'error tells you what to run instead. The guard is help, not an accusation: if you hit it,\n'
+           || E'you probably thought "table" when the answer was "note".\n') as md
+    from public.skill_library where slug = 'store-conventions')
+update public.skill_library s
+   set skill_md = n.md, version = '2.2.0', updated_at = now()
+  from n
+ where s.slug = 'store-conventions'
+   and (s.skill_md is distinct from n.md or s.version is distinct from '2.2.0');

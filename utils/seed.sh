@@ -40,18 +40,36 @@ run() {
   fi
 }
 
+# Record the run in the store itself. A failed seed was visible only in docker logs, which
+# nobody reads: on 2026-09-16 platform.sql failed on an instance at 4,096 dimensions and
+# every file after it was skipped. platform.health() reads this and says broken. It is also
+# how health dates the last boot -- honestly, now that boots no longer write to the change log.
+record() {
+  printf "create schema if not exists platform;
+create table if not exists platform.seed_runs (at timestamptz not null default now(), ok int, failed_file text, error text);
+insert into platform.seed_runs (ok, failed_file, error) values (%s, %s, %s);
+delete from platform.seed_runs where at < now() - interval '30 days';\n" \
+    "$1" "$2" "$3" > "$REPO/.seed-note.sql"
+  run "$REPO/.seed-note.sql" >/dev/null 2>&1 || true
+  rm -f "$REPO/.seed-note.sql"
+}
+sqlq() { printf "'%s'" "$(printf %s "$1" | sed "s/'/''/g")"; }
+
 echo "Seeding the shared data store from ${REPO}/demo"
+N=0
 for f in $FILES; do
   [ -f "$REPO/demo/$f" ] || { echo "  MISSING $f -- the store would be incomplete, stopping."; exit 1; }
   printf '  %-26s ' "$f"
   if run "$REPO/demo/$f" >/dev/null 2>"$REPO/.seed-err"; then
-    echo ok
+    echo ok; N=$((N+1))
   else
     echo FAILED
     sed 's/^/    /' "$REPO/.seed-err" | head -20
+    record "$N" "$(sqlq "$f")" "$(sqlq "$(grep -m1 ERROR "$REPO/.seed-err" || head -c 300 "$REPO/.seed-err")")"
     rm -f "$REPO/.seed-err"
     exit 1
   fi
 done
 rm -f "$REPO/.seed-err"
+record "$N" null null
 echo "Done. Re-running this changes nothing on an up-to-date database."

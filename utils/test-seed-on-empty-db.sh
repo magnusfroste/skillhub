@@ -218,6 +218,22 @@ check "a run is remembered, so flapping is answerable" \
 q "select public.backup_record('content','/root/.skillhub-backups/probe',1024,'written by the empty-database test')" >/dev/null
 check "a recorded backup turns that check green" \
   "select c->>'state' from jsonb_array_elements(platform.health()->'checks') c where c->>'check'='backup'" "ok"
+# Boots are not activity. The seed re-applies the house on every boot; until 2026-09-16 each
+# re-application was logged, and 223 of 242 writes in a day were the store telling itself
+# what it already knew. The caretaker flagged it as a write loop.
+q "select count(*) from platform.events" > /tmp/.events_before_$$ 2>/dev/null || true
+BEFORE="$(q "select count(*) from platform.events")"
+DB_CONTAINER="$NAME" DB_USER=postgres sh "$REPO/utils/seed.sh" >/dev/null 2>&1
+check "a boot over an up-to-date store writes nothing to the change log" \
+  "select count(*) - $BEFORE from platform.events" "0"
+check "but the boot itself is recorded, with every file ok" \
+  "select (count(*) >= 3)::text || ':' || (select failed_file is null from platform.seed_runs order by at desc limit 1)::text from platform.seed_runs" "true:true"
+check "and health says so" \
+  "select c->>'state' from jsonb_array_elements(platform.health()->'checks') c where c->>'check'='store'" "ok"
+q "insert into platform.seed_runs (ok, failed_file, error) values (2, 'platform.sql', 'ERROR: column cannot have more than 2000 dimensions for hnsw index')" >/dev/null
+check "a failed boot is broken, naming the file" \
+  "select (platform.health()->>'verdict') || ':' || (select c->>'state' from jsonb_array_elements(platform.health()->'checks') c where c->>'check'='store') || ':' || (select (c->>'detail') like '%stopped at platform.sql%' from jsonb_array_elements(platform.health()->'checks') c where c->>'check'='store')::text" "broken:broken:true"
+q "delete from platform.seed_runs where failed_file = 'platform.sql'" >/dev/null
 check "retiring the note works too" \
   "select (public.skillhub_retire('agent_01','note',(select id::text from public.notes where title='Seed test'),'seed test cleanup') ? 'retired_by')::text" "true"
 

@@ -29,8 +29,12 @@ alter table public.start_here
 comment on column public.start_here.do_this is 'The SQL to run, or what to do.';
 comment on column public.start_here.why is 'Why the step exists. Do not skip it.';
 
-truncate public.start_here;
-insert into public.start_here (owner, created_by, updated_by, step, heading, do_this, why) values
+-- Written only when the steps differ from what is there. Truncate-and-insert on every boot
+-- logged nine inserts per boot into the change log, and read as activity.
+create temp table if not exists _start_here_seed (owner text, created_by text, updated_by text,
+  step int, heading text, do_this text, why text);
+truncate _start_here_seed;
+insert into _start_here_seed (owner, created_by, updated_by, step, heading, do_this, why) values
 ('platform','platform','platform', 1, 'See the state',
  'select * from platform.overview();',
  'Seven numbers: how many tables, how many skills, which agents are active, what needs tidying.'),
@@ -66,6 +70,19 @@ insert into public.start_here (owner, created_by, updated_by, step, heading, do_
 ('platform','platform','platform', 9, 'Report to a person',
  'select platform.daily_report(1);',
  'Readable text: who did what, new skills, new tables, what is waiting. Paste it into the chat when someone asks how it is going.');
+
+do $sh$
+begin
+  if exists (select step, heading, do_this, why from _start_here_seed
+             except select step, heading, do_this, why from public.start_here)
+  or exists (select step, heading, do_this, why from public.start_here
+             except select step, heading, do_this, why from _start_here_seed) then
+    truncate public.start_here;
+    insert into public.start_here (owner, created_by, updated_by, step, heading, do_this, why)
+    select owner, created_by, updated_by, step, heading, do_this, why from _start_here_seed;
+  end if;
+end $sh$;
+drop table _start_here_seed;
 
 -- A comment is the only thing that reaches an agent through list_tables, so the rules that
 -- matter most are repeated there even though they are also in the skill.

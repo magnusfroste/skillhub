@@ -80,7 +80,7 @@ declare
   cks jsonb := '[]'::jsonb;
   verdict text := 'ok';
   e       record;
-  last_boot timestamptz;
+  last_boot timestamptz; seed_failed text; seed_error text;
   cron_last  timestamptz; cron_status text; cron_active boolean := false;
   open_n int; open_days numeric;
   stale_n int; aband_n int; dupe_n int;
@@ -92,12 +92,22 @@ declare
   -- because a stable function may not create one, and this has to stay stable to be
   -- callable from inside skillhub_overview.
 begin
-  select max(at) into last_boot from platform.events where table_name = 'start_here';
+  -- The seed records every run, including the one that failed. A failed seed used to be
+  -- visible only in docker logs; the store half-built itself and said nothing.
+  begin
+    select at, failed_file, error into last_boot, seed_failed, seed_error
+      from platform.seed_runs order by at desc limit 1;
+  exception when undefined_table then
+    select max(at) into last_boot from platform.events where table_name = 'start_here';
+  end;
   cks := cks || jsonb_build_object('check','store',
-    'state', case when last_boot is null then 'broken' else 'ok' end,
-    'detail', case when last_boot is null then 'The seed has never run: the store is not built.'
-                   else format('Built and re-applied on every boot; last at %s.', last_boot::timestamp(0)) end,
-    'run', case when last_boot is null then 'sh utils/seed.sh' end);
+    'state', case when last_boot is null then 'broken' when seed_failed is not null then 'broken' else 'ok' end,
+    'detail', case
+       when last_boot is null then 'There is no record of the seed having run: the store may not be built.'
+       when seed_failed is not null then format('The last boot (%s) stopped at %s, and every file after it was skipped: %s',
+                                                last_boot::timestamp(0), seed_failed, left(coalesce(seed_error,''), 240))
+       else format('Built and re-applied on every boot; last at %s, every file ok.', last_boot::timestamp(0)) end,
+    'run', case when last_boot is null or seed_failed is not null then 'docker logs <prefix>-seed   -- then fix the file and restart the seed service' end);
 
   -- Search by meaning fails quietly by design: keyword search keeps working, so nothing
   -- upstream ever notices. This is where it stops being quiet.
@@ -409,16 +419,6 @@ begin
   end if;
 end $do$;
 
--- And the list of house standards points at it, or nobody finds it.
-update public.skill_library
-   set skill_md = regexp_replace(skill_md, E'\n- `caretaker-operations`.*$', '')
- where slug = 'store-conventions';
-update public.skill_library
-   set skill_md = replace(skill_md,
-        E'- `load-from-source-system` -- bring an export (xlsx, csv, json) in from another system.\n',
-        E'- `load-from-source-system` -- bring an export (xlsx, csv, json) in from another system.\n'
-     || E'- `caretaker-operations` -- for the admin key: what to check, what to do, what to leave alone.\n')
- where slug = 'store-conventions'
-   and skill_md like '%load-from-source-system` -- bring an export%'
-   and skill_md not like '%caretaker-operations` -- for the admin key%';
+-- It is listed with the other house standards in platform_loading.sql, which owns that section.
+
 

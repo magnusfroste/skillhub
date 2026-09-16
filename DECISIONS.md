@@ -558,6 +558,27 @@ The general shape, worth stating because it will happen again: **a queue with on
 a wall, not a queue.** Anywhere the store asks an agent to wait, the answer has to reach
 the agent through a tool it already calls, not through a view someone else reads.
 
+## 23. A vector outlives the thing it points at
+
+Retiring takes an object out of keyword search. Making a note private keeps it out of the
+index in the first place. Neither removed a vector that was already there — so a retired
+skill stayed findable by meaning, and a note flipped from public to private kept the vector
+it had while it was public. Private skills were indexed outright, where private notes and
+documents never were.
+
+Found on 2026-09-16 by arithmetic: a rebuild on the demo came back with 73 objects where
+the index had held 79. The six were retired. Nothing was wrong with the rebuild; the six
+should not have been there.
+
+Two halves, because one is a guarantee and the other is hygiene. `skillhub_similar` asks
+`platform.embedding_visible` before returning a hit, so correctness does not depend on the
+index being tidy. The indexer prunes on every run, so the numbers an agent reads are true
+and the filter almost never has to fire.
+
+The general shape: **anything derived from content inherits the content's permissions, and
+inherits them at the moment of reading, not at the moment of writing.** A cache that
+remembers what something used to be allowed to be is a leak with a plausible explanation.
+
 ---
 
 ## What this does not do yet

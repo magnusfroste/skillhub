@@ -202,6 +202,9 @@ Two more worth asking once, because each exercises a wall:
   *created*. A key added after the first deploy needs Kong recreated, not restarted.
 - Semantic search reports it is off, or new content takes five minutes to become findable →
   `EMBEDDING_URL` and `EMBEDDING_KEY` are empty. They are on purpose; set them.
+- A retired or newly private object still turns up in `skillhub_similar` → the store is
+  running SQL older than 2026-09-16. Re-seed; `select public.embed_prune();` clears what is
+  already there, and the query side filters regardless.
 - `index.last_truncated` is above zero → chunks were CUT at the model's input limit and that
   content is indexed in part, silently. Set `EMBEDDING_MAX_CHARS` below `max_chars_per_chunk`
   and run the indexer again.

@@ -72,7 +72,8 @@ begin
            left(coalesce(s.description,'')||E'\n\n'||coalesce(s.skill_md,''), 60000) as body,
            md5(coalesce(s.name,'')||coalesce(s.description,'')||coalesce(s.skill_md,'')) as text_hash
     from platform.v_current_skills s
-    where not exists (select 1 from platform.embeddings e
+    where s.visibility = 'public'     -- as for notes and documents: nothing private is indexed
+      and not exists (select 1 from platform.embeddings e
                       where e.source='skill' and e.id=s.slug and e.chunk = 0
                         and e.text_hash = md5(coalesce(s.name,'')||coalesce(s.description,'')||coalesce(s.skill_md,'')))
     union all
@@ -266,6 +267,46 @@ from platform.embeddings e group by e.model;
 comment on view platform.v_index_status is 'How many objects and chunks are embedded per model, and how many objects are waiting.';
 
 grant execute on all functions in schema public to service_role, postgres;
+
+-- ---------------------------------------------------------------------------
+-- What may be returned by meaning, as opposed to what happens to have a vector.
+--
+-- Retiring an object takes it out of keyword search, and making a note private keeps it
+-- out of the index in the first place -- but nothing removed a vector that was already
+-- there. So a retired skill stayed findable by meaning, and a note flipped from public to
+-- private kept the vector it had while it was public. Found 2026-09-16 when a rebuild came
+-- back with six fewer objects than the index held. Both halves are closed here: the query
+-- side reads this view, so correctness does not depend on the index being tidy, and the
+-- indexer prunes, so the counts an agent sees are true.
+-- A function and not a view: a view over platform.embeddings pins the vector column's type,
+-- and platform.set_vector_dim() could then no longer alter it (2026-09-16, one test run
+-- later). The prune keeps the table free of these rows, so this is a net that rarely fires.
+create or replace function platform.embedding_visible(src text, obj_id text) returns boolean
+language sql stable set search_path = platform, public as $$
+  select case src
+    when 'note'     then exists (select 1 from public.notes n
+                                  where n.id::text = obj_id and n.retired_at is null and n.visibility = 'public')
+    when 'skill'    then exists (select 1 from platform.v_current_skills s
+                                  where s.slug = obj_id and s.visibility = 'public')
+    when 'document' then exists (select 1 from public.documents d
+                                  where d.id::text = obj_id and d.retired_at is null and d.visibility = 'public')
+    else true   -- schema comments: they describe public structure and have no owner
+  end;
+$$;
+comment on function platform.embedding_visible(text, text) is 'May a search by meaning return this object: it still exists, is public and is not retired. skillhub_similar asks before returning a hit; embed_prune deletes the rows where the answer is no.';
+
+create or replace function public.embed_prune() returns int
+language plpgsql security definer set search_path = public, platform as $$
+declare n int;
+begin
+  delete from platform.embeddings e
+   where not platform.embedding_visible(e.source, e.id);
+  get diagnostics n = row_count;
+  return n;
+end $$;
+comment on function public.embed_prune() is 'Removes vectors for objects that were retired, made private or deleted. Called by the indexer on every run.';
+revoke execute on function public.embed_prune() from public, anon, authenticated;
+grant execute on function public.embed_prune() to service_role, postgres;
 
 -- ---------------------------------------------------------------------------
 -- Rebuilding the index from scratch. The caretaker's call, and the only place in this

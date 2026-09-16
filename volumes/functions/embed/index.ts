@@ -335,6 +335,11 @@ Deno.serve(async (req: Request) => {
     return Response.json({ status: "error", message }, { status: 500 });
   }
 
+  // Vectors whose object was retired, made private or deleted. The query side filters them
+  // anyway, but an index that holds them reports numbers nobody can act on.
+  let pruned = 0;
+  try { pruned = Number(await rpc("embed_prune", {})) || 0; } catch { /* not fatal */ }
+
   try {
     let objects = 0, saved = 0, chunks = 0, truncated = 0, requests = 0, passes = 0;
     const errors: string[] = [];
@@ -356,7 +361,7 @@ Deno.serve(async (req: Request) => {
       status: "done",
       model: s.model, dimension: s.dimension, max_chars_per_chunk: s.max_chars, limit_from: s.limit_source,
       requests, max_inputs_per_request: EMBEDDING_MAX_INPUTS, passes,
-      objects, embedded: saved, chunks,
+      objects, embedded: saved, chunks, pruned,
       truncated, failed: errors.length, errors: errors.slice(0, 5),
       ...(dimNote ? { dimension_note: dimNote } : {}),
       comment: objects === 0 ? "Nothing was waiting."

@@ -188,7 +188,10 @@ begin
              round((1 - (e.vector <=> v))::numeric, 4) as similarity,
              count(*) over (partition by e.source, e.id) as chunks
       from platform.embeddings e
+      -- A vector outlives its object's visibility: retiring a skill or making a note
+      -- private leaves the row behind. embed_prune clears them; this is the guarantee.
       where e.model = skillhub_similar.model
+        and platform.embedding_visible(e.source, e.id)
       order by e.source, e.id, e.vector <=> v) b
     join platform.embeddings e on e.source = b.source and e.id = b.id and e.chunk = b.chunk and e.model = skillhub_similar.model
     order by b.similarity desc

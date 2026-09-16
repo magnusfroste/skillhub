@@ -162,6 +162,20 @@ check "and another agent does not see it as theirs" \
 q "select platform.resolve_structure_request((select max(id) from platform.structure_requests), 'service_role', 'Loaded from the uploaded file instead; nothing for you to do.', null, true)" >/dev/null
 check "the caretaker's answer reaches the agent" \
   "select (public.skillhub_overview('agent_01')->'your_requests'->0->>'status') || ':' || left(public.skillhub_overview('agent_01')->'your_requests'->0->>'answer', 24)" "declined:Loaded from the uploaded"
+# A vector outlives its object's visibility: retiring took an object out of keyword search
+# but left it findable by meaning, and a note flipped to private kept the vector it had
+# while it was public. Found 2026-09-16 when a rebuild came back six objects lighter.
+q "select public.skillhub_write_note('agent_01','Vector visibility probe','A public note written by the empty-database test, retired a moment later to pin that a retired object stops being findable by meaning.')" >/dev/null
+q "select public.embed_save_chunks('note', (select id::text from public.notes where title='Vector visibility probe'), 'probe', jsonb_build_array(to_jsonb(array_fill(0::real,array[1536]))), to_jsonb(array['x']), 'h')" >/dev/null
+check "a public note is returned by meaning" \
+  "select count(*) from jsonb_array_elements(public.skillhub_similar(to_jsonb(array_fill(0::real,array[1536])),'probe',20)) h where h->>'title'='Vector visibility probe'" "1"
+q "select public.skillhub_retire('agent_01','note',(select id::text from public.notes where title='Vector visibility probe'),'pinning that a retired object leaves the meaning index too')" >/dev/null
+check "and after retiring it is not, though the vector is still there" \
+  "select (select count(*) from jsonb_array_elements(public.skillhub_similar(to_jsonb(array_fill(0::real,array[1536])),'probe',20)) h where h->>'title'='Vector visibility probe')::text || ':' || (select count(*) from platform.embeddings where model='probe' and source='note')::text" "0:1"
+check "the prune removes it" \
+  "select public.embed_prune() >= 1" "t"
+check "and then the vector is gone" \
+  "select count(*) from platform.embeddings where model='probe' and source='note'" "0"
 check "retiring the note works too" \
   "select (public.skillhub_retire('agent_01','note',(select id::text from public.notes where title='Seed test'),'seed test cleanup') ? 'retired_by')::text" "true"
 

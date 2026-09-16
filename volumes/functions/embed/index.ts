@@ -50,7 +50,7 @@ type Candidate = { source: string; id: string; chunk: number; head: string; text
 type Settings = {
   url?: string | null; model?: string | null; dimension?: number | null; max_tokens?: number | null;
   max_chars?: number | null; limit_source?: string | null; probed_at?: string | null; status?: string | null;
-  table_dimension?: number | null;
+  chars_per_token?: number | null; table_dimension?: number | null;
 };
 
 async function rpc(fn: string, args: Record<string, unknown>): Promise<any> {
@@ -111,20 +111,37 @@ async function measureCharsPerToken(): Promise<{ ratio: number; measured: boolea
 
 /** Embeds texts in slices the endpoint accepts. A failed slice is retried one text at a
  *  time, so one bad input does not sink its slice-mates; the texts that still fail come
- *  back as null with their error. */
+ *  back as null with their error.
+ *
+ *  Truncation is counted, because with truncate_prompt_tokens armed the endpoint no longer
+ *  refuses an over-budget input -- it cuts it, and a rule indexed in part is worse than one
+ *  not indexed at all, since nothing says so. Two signals: a single-input request whose
+ *  usage equals the limit exactly is truncation with near-certainty, and any text longer
+ *  than the measured ratio allows is counted as suspected. Both make the same number go up. */
 let lastRequests = 0;
+let lastTruncated = 0;
+let tokenBudget = 0;      // max_tokens, once the probe knows it
+let charsPerToken = CHARS_PER_TOKEN;
+function overBudget(text: string): boolean {
+  return tokenBudget > 0 && text.length / charsPerToken > tokenBudget;
+}
 async function embed(texts: string[]): Promise<{ vectors: (number[] | null)[]; errors: Map<number, string> }> {
   const vectors: (number[] | null)[] = new Array(texts.length).fill(null);
   const errors = new Map<number, string>();
-  lastRequests = 0;
+  lastRequests = 0; lastTruncated = 0;
   for (let i = 0; i < texts.length; i += EMBEDDING_MAX_INPUTS) {
     const slice = texts.slice(i, i + EMBEDDING_MAX_INPUTS);
     try {
       const vs = await embedOnce(slice); lastRequests++;
+      if (slice.length === 1 && tokenBudget > 0 && lastPromptTokens === tokenBudget) lastTruncated++;
+      else lastTruncated += slice.filter(overBudget).length;
       vs.forEach((v, j) => vectors[i + j] = v);
     } catch (_e) {
       for (let j = 0; j < slice.length; j++) {
-        try { vectors[i + j] = (await embedOnce([slice[j]]))[0]; lastRequests++; }
+        try {
+          vectors[i + j] = (await embedOnce([slice[j]]))[0]; lastRequests++;
+          if (tokenBudget > 0 && lastPromptTokens === tokenBudget) lastTruncated++;
+        }
         catch (e2) { errors.set(i + j, e2 instanceof Error ? e2.message : String(e2)); }
       }
     }
@@ -192,13 +209,16 @@ async function settings(force: boolean): Promise<Settings> {
 
   const dimension = (await embedOnce(["probe"]))[0].length;
   let max_tokens: number | null = null, max_chars: number, limit_source: string;
+  let ratio = CHARS_PER_TOKEN;
   if (EMBEDDING_MAX_CHARS > 0) {
     max_chars = EMBEDDING_MAX_CHARS; limit_source = "env";
+    const said = await askServerForLimit();       // still worth knowing, for the truncation count
+    if (said) max_tokens = said.tokens;
   } else {
     const said = await askServerForLimit();
     if (said) {
-      const { ratio, measured } = await measureCharsPerToken();
-      max_tokens = said.tokens; limit_source = said.from + (measured ? `, ${ratio.toFixed(2)} chars/token measured` : "");
+      const m = await measureCharsPerToken(); ratio = m.ratio;
+      max_tokens = said.tokens; limit_source = said.from + (m.measured ? `, ${ratio.toFixed(2)} chars/token measured` : "");
       max_chars = Math.floor(said.tokens * ratio * 0.85);
     } else {
       const ok = await probeLimitByTrying();
@@ -207,7 +227,7 @@ async function settings(force: boolean): Promise<Settings> {
   }
   max_chars = Math.max(500, Math.min(max_chars, 60000));
   const s: Settings = { url: EMBEDDING_URL, model: EMBEDDING_MODEL, dimension, max_tokens, max_chars, limit_source,
-    probed_at: new Date().toISOString() };
+    chars_per_token: ratio, probed_at: new Date().toISOString() };
   await rpc("embedder_save", { p: s });
   return { ...prev, ...s };
 }
@@ -217,6 +237,8 @@ async function settings(force: boolean): Promise<Settings> {
  *  ratio was still wrong the chunk is cut at the limit instead of lost. */
 function armTruncation(s: Settings) {
   if (!EMBEDDING_TRUNCATE_TOKENS && s.limit_source?.startsWith("vllm") && s.max_tokens) truncateTokens = s.max_tokens;
+  tokenBudget = truncateTokens || s.max_tokens || 0;
+  charsPerToken = Number(s.chars_per_token) || CHARS_PER_TOKEN;
 }
 
 /** The vector column has to be the model's dimension. Changed only while the table is
@@ -258,7 +280,7 @@ Deno.serve(async (req: Request) => {
   try {
     const candidates: Candidate[] = await rpc("embed_candidates", { max_rows: batch, max_chars: s.max_chars });
     if (!candidates.length) {
-      await rpc("embedder_save", { p: { status: "ok", last_run: now(), last_embedded: 0, last_failed: 0, last_error: null } });
+      await rpc("embedder_save", { p: { status: "ok", last_run: now(), last_embedded: 0, last_failed: 0, last_truncated: 0, last_error: null } });
       return Response.json({ status: "done", embedded: 0, comment: "Nothing was waiting.", model: s.model, dimension: s.dimension,
         max_chars_per_chunk: s.max_chars, limit_from: s.limit_source, ...(dimNote ? { dimension_note: dimNote } : {}) });
     }
@@ -293,14 +315,14 @@ Deno.serve(async (req: Request) => {
     }
 
     await rpc("embedder_save", { p: { status: saved || !errors.length ? "ok" : "error", last_run: now(),
-      last_embedded: saved, last_failed: errors.length, last_error: errors[0] ?? null } });
+      last_embedded: saved, last_failed: errors.length, last_truncated: lastTruncated, last_error: errors[0] ?? null } });
 
     return Response.json({
       status: "done",
       model: s.model, dimension: s.dimension, max_chars_per_chunk: s.max_chars, limit_from: s.limit_source,
       requests: lastRequests, max_inputs_per_request: EMBEDDING_MAX_INPUTS,
       objects: objects.size, embedded: saved, chunks: savedChunks,
-      failed: errors.length, errors: errors.slice(0, 5),
+      truncated: lastTruncated, failed: errors.length, errors: errors.slice(0, 5),
       ...(dimNote ? { dimension_note: dimNote } : {}),
       comment: objects.size === batch ? "Full batch -- run again to continue." : "Everything that was waiting is embedded.",
     });

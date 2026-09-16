@@ -178,18 +178,23 @@ create table if not exists platform.embedder (
   last_run      timestamptz,
   last_embedded int,
   last_failed   int,
+  last_truncated int,           -- chunks cut at the model's limit in the last run
+  chars_per_token numeric,      -- measured on this endpoint's tokenizer, not assumed
   last_error    text
 );
+alter table platform.embedder add column if not exists last_truncated int;
+alter table platform.embedder add column if not exists chars_per_token numeric;
 comment on table platform.embedder is 'What the indexer found out about the embedding endpoint, and how its last run went. Written by the indexer; read by skillhub_overview.';
 
 create or replace function public.embedder_save(p jsonb) returns jsonb
 language plpgsql security definer set search_path = public, platform as $$
 begin
   insert into platform.embedder as x (id, url, model, dimension, max_tokens, max_chars, limit_source, probed_at,
-                                      status, last_run, last_embedded, last_failed, last_error)
+                                      status, last_run, last_embedded, last_failed, last_truncated, chars_per_token, last_error)
   values (1, p->>'url', p->>'model', (p->>'dimension')::int, (p->>'max_tokens')::int, (p->>'max_chars')::int,
           p->>'limit_source', (p->>'probed_at')::timestamptz, p->>'status', (p->>'last_run')::timestamptz,
-          (p->>'last_embedded')::int, (p->>'last_failed')::int, p->>'last_error')
+          (p->>'last_embedded')::int, (p->>'last_failed')::int, (p->>'last_truncated')::int,
+          (p->>'chars_per_token')::numeric, p->>'last_error')
   on conflict (id) do update set
     url = coalesce(excluded.url, x.url), model = coalesce(excluded.model, x.model),
     dimension = coalesce(excluded.dimension, x.dimension), max_tokens = coalesce(excluded.max_tokens, x.max_tokens),
@@ -197,6 +202,8 @@ begin
     probed_at = coalesce(excluded.probed_at, x.probed_at), status = coalesce(excluded.status, x.status),
     last_run = coalesce(excluded.last_run, x.last_run), last_embedded = coalesce(excluded.last_embedded, x.last_embedded),
     last_failed = coalesce(excluded.last_failed, x.last_failed),
+    last_truncated = coalesce(excluded.last_truncated, x.last_truncated),
+    chars_per_token = coalesce(excluded.chars_per_token, x.chars_per_token),
     last_error = case when p ? 'last_error' then p->>'last_error' else x.last_error end;
   return (select to_jsonb(e) from platform.embedder e where id = 1);
 end $$;
@@ -229,14 +236,21 @@ language sql stable security definer set search_path = public, platform as $$
     'objects', (select count(distinct (source, id)) from platform.embeddings),
     'chunks', (select count(*) from platform.embeddings),
     'waiting', jsonb_array_length(public.embed_candidates(1000, 100000)),
+    'chars_per_token', e.chars_per_token,
     'last_run', e.last_run::timestamp(0), 'last_embedded', e.last_embedded, 'last_failed', e.last_failed,
+    -- Truncation is the quiet failure of this design: on vLLM an over-budget chunk is CUT,
+    -- not refused, and a partially indexed rule is worse than an unindexed one because
+    -- nothing says so. Any number above zero here means the chunk size is too generous for
+    -- this content -- set EMBEDDING_MAX_CHARS lower.
+    'last_truncated', e.last_truncated,
     'last_error', e.last_error,
     'note', case when e.status is null or e.status = 'off'
                  then 'EMBEDDING_URL is not set: keyword search works, search by meaning does not, and new content is found only by its words. Set EMBEDDING_URL, EMBEDDING_KEY and EMBEDDING_MODEL; the indexer works out the rest.'
+                 when coalesce(e.last_truncated, 0) > 0 then 'The last run CUT ' || e.last_truncated || ' chunk(s) at the model''s input limit: that content is indexed in part, silently. Set EMBEDDING_MAX_CHARS below max_chars_per_chunk and re-run.'
                  when e.status = 'error' then 'The indexer''s last run failed; see last_error. Keyword search is unaffected.'
                  else null end)
   from (select * from platform.embedder where id = 1
-        union all select 1, null,null,null,null,null,null,null,'off',null,null,null,null
+        union all select 1, null,null,null,null,null,null,null,'off',null,null,null,null,null,null
         limit 1) e;
 $$;
 comment on function public.embedder_status() is 'Whether search by meaning is on, which model, and how the last indexing run went. Shown in skillhub_overview.';

@@ -64,20 +64,49 @@ async function rpc(fn: string, args: Record<string, unknown>): Promise<any> {
   try { return JSON.parse(text); } catch { return text; }
 }
 
+// Tokens the endpoint reported for the last request (usage.prompt_tokens), 0 if it did not
+// say. The probe uses it to measure characters per token for this tokenizer.
+let lastPromptTokens = 0;
+// On vLLM, ask it to truncate at its own limit rather than refuse -- set automatically once
+// the probe has identified the server, or by hand with EMBEDDING_TRUNCATE_TOKENS.
+let truncateTokens = EMBEDDING_TRUNCATE_TOKENS;
+
 async function embedOnce(texts: string[]): Promise<number[][]> {
   if (!EMBEDDING_URL) throw new Error("EMBEDDING_URL is not set.");
   const res = await fetch(EMBEDDING_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json", ...(EMBEDDING_KEY ? { Authorization: `Bearer ${EMBEDDING_KEY}` } : {}) },
     body: JSON.stringify({ model: EMBEDDING_MODEL, input: texts,
-      ...(EMBEDDING_TRUNCATE_TOKENS ? { truncate_prompt_tokens: EMBEDDING_TRUNCATE_TOKENS } : {}) }),
+      ...(truncateTokens ? { truncate_prompt_tokens: truncateTokens } : {}) }),
   });
   const text = await res.text();
   if (!res.ok) throw new Error(`The embeddings endpoint answered ${res.status}: ${text.slice(0, 300)}`);
   const data = JSON.parse(text);
+  lastPromptTokens = Number(data.usage?.prompt_tokens ?? 0) || 0;
   const vectors: number[][] = (data.data ?? []).map((d: any) => d.embedding);
   if (vectors.length !== texts.length) throw new Error(`Got ${vectors.length} vectors for ${texts.length} texts.`);
   return vectors;
+}
+
+// A sample in the store's own mix of Swedish and English, 1,000 characters, for measuring
+// how this tokenizer counts. Qwen's tokenizer spends more tokens on Swedish than cl100k
+// does; a chunk sized on an assumed ratio would be refused by a 2,048-token vLLM.
+const RATIO_SAMPLE = (
+  "Avvikelsen registrerades i kvalitetsregistret med leverantörens artikelnummer och en kort beskrivning av felet. " +
+  "The supplier surveillance rule says every approved supplier is audited within twelve months of the last audit. " +
+  "Kolumnen hours_spent innehåller värdet 999 för ärenden där tiden inte registrerats; exkludera dem ur summor och medelvärden. " +
+  "Register the document, keep its own clause numbering, and never present condensed text inside quotation marks. " +
+  "Nästa månads export laddas med skillhub_load_file mot samma tabell och upsertas på ticket_no utan att någon skriver om raderna. "
+).repeat(3).slice(0, 1000);
+
+/** Characters per token for this endpoint's tokenizer, measured; the constant if the endpoint
+ *  reports no usage. */
+async function measureCharsPerToken(): Promise<{ ratio: number; measured: boolean }> {
+  try {
+    await embedOnce([RATIO_SAMPLE]);
+    if (lastPromptTokens > 0) return { ratio: RATIO_SAMPLE.length / lastPromptTokens, measured: true };
+  } catch { /* fall through */ }
+  return { ratio: CHARS_PER_TOKEN, measured: false };
 }
 
 /** Embeds texts in slices the endpoint accepts. A failed slice is retried one text at a
@@ -168,8 +197,9 @@ async function settings(force: boolean): Promise<Settings> {
   } else {
     const said = await askServerForLimit();
     if (said) {
-      max_tokens = said.tokens; limit_source = said.from;
-      max_chars = Math.floor(said.tokens * CHARS_PER_TOKEN * 0.9);
+      const { ratio, measured } = await measureCharsPerToken();
+      max_tokens = said.tokens; limit_source = said.from + (measured ? `, ${ratio.toFixed(2)} chars/token measured` : "");
+      max_chars = Math.floor(said.tokens * ratio * 0.85);
     } else {
       const ok = await probeLimitByTrying();
       max_chars = Math.floor(ok * 0.9); limit_source = "probe";
@@ -180,6 +210,13 @@ async function settings(force: boolean): Promise<Settings> {
     probed_at: new Date().toISOString() };
   await rpc("embedder_save", { p: s });
   return { ...prev, ...s };
+}
+
+/** vLLM refuses an input over max_model_len unless asked to truncate; once the server is
+ *  known to be vLLM, ask -- the chunk size keeps this from ever triggering, and if the
+ *  ratio was still wrong the chunk is cut at the limit instead of lost. */
+function armTruncation(s: Settings) {
+  if (!EMBEDDING_TRUNCATE_TOKENS && s.limit_source?.startsWith("vllm") && s.max_tokens) truncateTokens = s.max_tokens;
 }
 
 /** The vector column has to be the model's dimension. Changed only while the table is
@@ -210,6 +247,7 @@ Deno.serve(async (req: Request) => {
   let dimNote: string | null = null;
   try {
     s = await settings(force);
+    armTruncation(s);
     dimNote = await ensureDimension(s.dimension!);
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);

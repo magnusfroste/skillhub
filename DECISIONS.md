@@ -502,7 +502,11 @@ locked itself on the first row.
 Since 2026-09-16 the indexer asks. On its first run it embeds one word and reads the
 dimension off the answer; while the table is empty it sets the vector column to it. It asks
 the server how much one input may carry — TEI answers on `/info`, vLLM on `/v1/models`; OpenAI
-answers neither and gets sizes tried from 24,000 characters down. What it found is written
+answers neither and gets sizes tried from 24,000 characters down. Where the limit is in
+tokens it also measures characters per token on a Swedish-and-English sample from the
+endpoint's own usage figures — Qwen's tokenizer spends more on Swedish than OpenAI's, and a
+chunk sized on an assumed ratio would be refused — and on vLLM it asks for truncation at
+the limit as a belt to those braces. What it found is written
 to `platform.embedder` and shown by `skillhub_overview` under `index`, with the result of
 every run — so "my colleague cannot find what I wrote" has a place to look. Three variables
 remain.

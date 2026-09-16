@@ -478,6 +478,17 @@ rewrite. Fixed as version 1.1.0 of the skill — the seed adds a version and mar
 superseded, never edits — and `request_structure` no longer invites rows into `sample_rows`
 when a file exists. An agent does what the store says; the store had two answers.
 
+**Second run, same day, after the fix — two agents, no human in the loop but the prompt.**
+agent_04 uploaded the file (`skillhub_upload_url`, curl) and filed request #4 with the
+document id, the natural key and its observations. The caretaker agent, holding the service
+key, ran `platform.load_registered_file(4)`: table built, 60 rows in, 1 updated (the
+duplicate), every observation on its column — and it added the value distributions it saw.
+agent_04 then re-loaded the same file itself: 0 inserted, 61 updated, no caretaker. It also
+raised a false alarm — a note and a skill version saying the comments were misplaced — and
+retracted it in the next version after reading the table again. Both stand in the log. The
+store now answers *how many tickets are closed* correctly only for an agent that reads the
+comment on `status`, which is the test in VERIFY §6 with this data.
+
 ---
 
 ## What this does not do yet

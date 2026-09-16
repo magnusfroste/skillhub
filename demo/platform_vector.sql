@@ -64,19 +64,31 @@ begin
             where p.proname = 'similar' and p.pronamespace = 'platform'::regnamespace loop
     execute 'drop function ' || r.sig;
   end loop;
+  -- Stage one of a similarity search: the nearest CHUNKS, nothing else -- ORDER BY distance
+  -- LIMIT k, the only shape an index can serve. Grouping by object and filtering by
+  -- visibility happen afterwards, on those k rows (skillhub_similar).
+  --
+  -- The distance expression must be the one the index was built on, or the planner cannot
+  -- use it: plain vector up to 2,000 dimensions, the half-precision cast between 2,000 and
+  -- 4,000, and above that there is no index to match.
+  --
+  -- Measured 2026-09-16 on 4,096 dimensions: with grouping and the visibility check inside
+  -- the ordered scan, a search over 25,000 chunks took 28 seconds against 0.7 for the bare
+  -- nearest-neighbour scan -- every row's distance computed, every row sorted, every row's
+  -- object looked up. The same shape kept the 1,536 HNSW index from being used at all.
   execute format($f$
     create or replace function platform.similar(query_vector vector(%1$s), model_name text, max_hits int default 5)
     returns table (source text, id text, chunk int, head text, distance real)
     language sql stable as $inner$
-      select source, id, chunk, head, distance from (
-        select distinct on (e.source, e.id)
-               e.source, e.id, e.chunk, e.head, (e.vector <=> query_vector)::real as distance
-        from platform.embeddings e
-        where e.model = model_name
-        order by e.source, e.id, e.vector <=> query_vector) best
-      order by distance
+      select e.source, e.id, e.chunk, e.head, (%2$s)::real
+      from platform.embeddings e
+      where e.model = model_name
+      order by %2$s
       limit max_hits;
-    $inner$;$f$, d);
+    $inner$;$f$, d,
+    case when d > 2000 and d <= 4000
+         then format('e.vector::halfvec(%s) <=> query_vector::halfvec(%s)', d, d)
+         else 'e.vector <=> query_vector' end);
 end $$;
 
 -- Manual path kept: set platform.new_dim before running this file and it applies.

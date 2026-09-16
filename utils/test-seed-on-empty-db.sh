@@ -238,6 +238,25 @@ q "insert into platform.seed_runs (ok, failed_file, error) values (2, 'platform.
 check "a failed boot is broken, naming the file" \
   "select (platform.health()->>'verdict') || ':' || (select c->>'state' from jsonb_array_elements(platform.health()->'checks') c where c->>'check'='store') || ':' || (select (c->>'detail') like '%stopped at platform.sql%' from jsonb_array_elements(platform.health()->'checks') c where c->>'check'='store')::text" "broken:broken:true"
 q "delete from platform.seed_runs where failed_file = 'platform.sql'" >/dev/null
+# The shape of a similarity search decides whether an index can serve it. Grouping chunks
+# into objects inside the ordered scan kept HNSW from being used at all and made a search
+# over 25,000 chunks at 4,096 dimensions take 28 seconds (2026-09-16). Stage one must be a
+# bare ORDER BY distance LIMIT k, written in the expression the index was built on.
+# enable_sort=off asks "can the index serve this ORDER BY": the vector index is the only path
+# that returns rows already in distance order, so if the query is in a shape it can serve,
+# the planner takes it; if not, the plan shows a Sort. (enable_seqscan=off alone does not
+# ask that -- on a table this small the planner answers with a bitmap scan on the primary
+# key and a sort, which is how the first version of this check failed a query that was fine.)
+plan() { docker exec -e PGOPTIONS="-c enable_seqscan=off -c enable_sort=off -c client_min_messages=warning" "$NAME" psql -U postgres -At -c "explain (costs off) select * from platform.similar(array_fill(0.1::real, array[$1])::vector, 'probe', 100)" 2>&1; }
+planned() { if plan "$1" | grep -q "Index Scan using embeddings_vector_idx"; then echo yes; else echo no; fi; }
+q "truncate platform.embeddings" >/dev/null
+q "select platform.set_vector_dim(1536)" >/dev/null
+printf "   %-46s %s\n" "a similarity search can use the HNSW index" "$( [ "$(planned 1536)" = yes ] && echo ok || { echo "FAILED -- $(plan 1536 | head -3 | tr '\n' ' ')"; } )"
+[ "$(planned 1536)" = yes ] || fail=1
+q "select platform.set_vector_dim(3072)" >/dev/null
+printf "   %-46s %s\n" "and the half-precision one at 3,072" "$( [ "$(planned 3072)" = yes ] && echo ok || { echo "FAILED -- $(plan 3072 | head -3 | tr '\n' ' ')"; } )"
+[ "$(planned 3072)" = yes ] || fail=1
+q "select platform.set_vector_dim(1536)" >/dev/null
 check "retiring the note works too" \
   "select (public.skillhub_retire('agent_01','note',(select id::text from public.notes where title='Seed test'),'seed test cleanup') ? 'retired_by')::text" "true"
 

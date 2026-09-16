@@ -159,18 +159,25 @@ end $$;
 -- public objects. See embed_candidates.
 create or replace function public.skillhub_similar(query_vector jsonb, model text, max_hits int default 5)
 returns jsonb language plpgsql stable security definer set search_path = public, platform as $$
-declare v vector; j jsonb;
+declare
+  v vector; j jsonb;
+  -- How many nearest chunks to take before grouping them into objects. A long object is
+  -- several chunks and a retired one is filtered out afterwards, so the candidate set is
+  -- wider than the answer: twenty per hit wanted, never fewer than a hundred.
+  k int := greatest(coalesce(max_hits, 5) * 20, 100);
 begin
   v := (query_vector #>> '{}')::vector;
-  -- One row per object, at its best chunk. A long skill is several vectors since 2026-09-16;
-  -- without distinct on, one skill could fill every slot of the answer with its own sections.
+  -- Two stages, because one was measured at 28 seconds over 25,000 chunks (2026-09-16).
+  -- Stage one, platform.similar: the k nearest chunks, in the shape an index can serve.
+  -- Stage two, here: drop what may not be returned, keep each object once at its best
+  -- chunk, look up titles -- on k rows, not on the table.
   select coalesce(jsonb_agg(x order by x.similarity desc), '[]'::jsonb) into j from (
     select b.source as kind, b.id, b.similarity,
-           case e.source
-             when 'skill' then (select s.name from platform.v_current_skills s where s.slug = e.id)
-             when 'note' then (select n.title from public.notes n where n.id::text = e.id)
-             when 'document' then (select d.filename from public.documents d where d.id::text = e.id)
-             when 'schema' then e.id
+           case b.source
+             when 'skill' then (select s.name from platform.v_current_skills s where s.slug = b.id)
+             when 'note' then (select n.title from public.notes n where n.id::text = b.id)
+             when 'document' then (select d.filename from public.documents d where d.id::text = b.id)
+             when 'schema' then b.id
            end as title,
            -- Which section matched, when the object has more than one chunk. That is where
            -- to start reading; skillhub_read still returns the whole object.
@@ -178,29 +185,32 @@ begin
            -- For a schema hit the comment IS the answer, so it travels with the result. A
            -- pointer would send the agent looking for a reader that does not exist:
            -- skillhub_read handles skill, note, document and table, not a single column.
-           case when e.source = 'schema' then
-             case when position('.' in e.id) > 0
-                  then col_description(('public.'||split_part(e.id,'.',1))::regclass,
+           case when b.source = 'schema' then
+             case when position('.' in b.id) > 0
+                  then col_description(('public.'||split_part(b.id,'.',1))::regclass,
                          (select a.attnum from pg_attribute a
-                           where a.attrelid = ('public.'||split_part(e.id,'.',1))::regclass
-                             and a.attname = split_part(e.id,'.',2)))
-                  else obj_description(('public.'||e.id)::regclass)
+                           where a.attrelid = ('public.'||split_part(b.id,'.',1))::regclass
+                             and a.attname = split_part(b.id,'.',2)))
+                  else obj_description(('public.'||b.id)::regclass)
              end
            end as comment
     from (
-      select distinct on (e.source, e.id)
-             e.source, e.id, e.chunk, e.head,
-             round((1 - (e.vector <=> v))::numeric, 4) as similarity,
-             count(*) over (partition by e.source, e.id) as chunks
-      from platform.embeddings e
-      -- A vector outlives its object's visibility: retiring a skill or making a note
-      -- private leaves the row behind. embed_prune clears them; this is the guarantee.
-      where e.model = skillhub_similar.model
-        and platform.embedding_visible(e.source, e.id)
-      order by e.source, e.id, e.vector <=> v) b
-    join platform.embeddings e on e.source = b.source and e.id = b.id and e.chunk = b.chunk and e.model = skillhub_similar.model
-    order by b.similarity desc
-    limit max_hits) x;
+      select best.*,
+             -- total chunks of the object, not of the candidates: counted on the few rows
+             -- that survive, through the primary key
+             (select count(*) from platform.embeddings e
+               where e.source = best.source and e.id = best.id and e.model = skillhub_similar.model) as chunks
+      from (
+        select distinct on (c.source, c.id)
+               c.source, c.id, c.chunk, c.head, round((1 - c.distance)::numeric, 4) as similarity
+        from platform.similar(v, skillhub_similar.model, k) c
+        -- A vector outlives its object's visibility: retiring a skill or making a note
+        -- private leaves the row behind. embed_prune clears them; this is the guarantee.
+        where platform.embedding_visible(c.source, c.id)
+        order by c.source, c.id, c.distance) best
+      order by best.similarity desc
+      limit max_hits) b
+    order by b.similarity desc) x;
   return j;
 end $$;
 

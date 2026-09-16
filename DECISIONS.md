@@ -615,6 +615,49 @@ searching rather than by being told: what to check, the four things a caretaker 
 does, and what to leave alone. The cheapest guard against improvisation is not a rule that
 forbids — it is a ready answer for the thing that was about to be invented.
 
+## 25. The shape of a search decides whether an index can serve it
+
+Chunking made one object several vectors, so similarity search grouped them: one hit per
+object, at its best chunk. The grouping and the visibility check went inside the ordered
+scan — `distinct on (source, id) order by source, id, distance` — and that is a query no
+vector index can serve. Measured on a scratch store at 4,096 dimensions, the client's case,
+on a host deliberately starved to 1.5 GB:
+
+| chunks | the search agents ran | the bare nearest-neighbour scan |
+|---|---|---|
+| 2,000 | 0.3 s | 0.03 s |
+| 10,000 | 5.6 s | 0.2 s |
+| 25,000 | **28 s** | 0.7 s |
+
+Every row's distance computed, every row sorted, every row's object looked up. The same
+shape kept the 1,536 HNSW index from being used at all, and the half-precision index built
+for 2,000–4,000 dimensions had never been usable: the query compared `vector` to `vector`,
+and the index is on `vector::halfvec(n)`. It was built, maintained, and read by nothing.
+
+Now two stages. `platform.similar` returns the k nearest chunks and nothing else — `ORDER BY
+distance LIMIT k`, written in the expression the index was built on, regenerated for the
+dimension. `skillhub_similar` groups, filters and looks up titles on those k rows (twenty
+per hit wanted, at least a hundred). Same 25,000 chunks:
+
+| dimension | index | before | after |
+|---|---|---|---|
+| 4,096 | none | 28 s | **1.1 s** |
+| 1,536 | HNSW | index unusable | **62 ms** |
+| 3,072 | half-precision HNSW | index unusable | **78 ms**, against 685 ms for the same scan without the cast |
+
+The empty-database test now asks whether the index *can* serve the search — sorting
+disabled, so the vector index is the only path that returns rows in distance order — and was
+shown to fail on the old shape put back by hand. An earlier version of that check disabled
+only sequential scans and failed the correct query: on a small table the planner answered
+with a bitmap scan on the primary key.
+
+Two things the measurement leaves standing. At 4,096 dimensions there is no index, so a
+search is linear in the number of chunks: about a second per 25,000 on a starved host,
+tolerable into the tens of thousands and not beyond. And building HNSW on a full table with
+the default `maintenance_work_mem` took 285 s at 1,536 and 404 s at 3,072 for 25,000 rows.
+`platform.reindex` never does that — it empties the table and the index fills row by row —
+but anyone recreating the index by hand should raise it first.
+
 ---
 
 ## What this does not do yet

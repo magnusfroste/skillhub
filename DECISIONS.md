@@ -517,6 +517,21 @@ names the section. Measured on dev with a 3,000-character budget: two skills bec
 chunks, and *"what to do with a csv export when the table already exists"* found the loading
 skill at its first section. A RAG embedder at 512 tokens is now enough.
 
+**Measured against the client's own embedder, 2026-09-16** (Qwen3-Embedding-8B FP8 on vLLM,
+`--max-model-len 2048`, `--max-num-seqs 8`): the indexer read `max_model_len` off
+`/v1/models`, measured 3.89 characters per token on a Swedish-and-English sample, chose
+6,773 characters per chunk, found the model returns **4,096** dimensions and rebuilt the
+column at that width — no HNSW above 4,000, so an exact scan, which is milliseconds here.
+Then 62 objects in 66 chunks, nothing truncated, nothing failed. Matryoshka was the one
+thing that would have bought an index: the endpoint refuses `dimensions=1024` outright, so
+4,096 and an exact scan is the answer with evidence rather than by default. Real store
+content tokenizes at 4.2-4.35 characters per token — better than the prose the probe
+measures on, so the headroom holds. Swedish questions against English content on a private
+model: *"vad gör jag med en csv-export när tabellen redan finns"* → the loading skill at
+0.71; *"hur många ärenden är stängda"* → the comment on `support_tickets.status` that says
+the column carries three spellings of closed. That is the whole retrieval layer, on hardware
+the client owns, with nothing leaving the building.
+
 The chunker found something else on its first run: the conventions skill on dev was 201,433
 characters, holding "## Overview" sixteen times. Three seed statements strip their own
 section and re-append it, and all three used the regex flag under which `.` stops at a

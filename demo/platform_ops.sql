@@ -107,6 +107,17 @@ begin
       'detail','Off: EMBEDDING_URL is not set. Keyword search is unaffected; nothing is found by meaning, so a question that does not share words with the answer returns nothing.',
       'run','Set EMBEDDING_URL, EMBEDDING_KEY and EMBEDDING_MODEL, then: select platform.reindex(''turning meaning search on'');',
       'changes','Empties the vector index and rebuilds it from the content. Nothing else is touched, and nothing is lost -- but do it once, deliberately, not as a step in a list.');
+  elsif e.status = 'error' and e.last_error like '%Vectors from different models are never mixed%' then
+    -- The model was changed before the index was emptied. This is the ordinary way a model
+    -- change goes wrong, and the endpoint is fine: pointing the caretaker at check-embedder
+    -- here sends it to a tool that says PASS. The fix is the rebuild. Found 2026-09-16, the
+    -- first time a store was switched back from a private model to OpenAI.
+    cks := cks || jsonb_build_object('check','meaning search','state','broken',
+      'detail', format('The embedding model was changed to one of a different dimension while the index still held the old vectors (%s of them, at %s). The indexer will not mix them, so nothing new is indexed, and search by meaning returns nothing: the old vectors belong to a model that is no longer asked.',
+                       (select count(*) from platform.embeddings),
+                       (select atttypmod from pg_attribute where attrelid = 'platform.embeddings'::regclass and attname = 'vector')),
+      'run', 'select platform.reindex(''the embedding model was changed; rebuilding for the new one'');',
+      'changes', 'Empties the vector index and rebuilds it for the model now configured. Nothing but the index is touched and nothing is lost: every vector is derived from content that stays. Meaning search is empty until it finishes -- which it already is.');
   elsif e.status = 'error' then
     cks := cks || jsonb_build_object('check','meaning search','state','broken',
       'detail', format('The indexer''s last run failed: %s', left(coalesce(e.last_error,'(no message)'), 300)),

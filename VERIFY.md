@@ -183,10 +183,12 @@ the file's hash. A second `skillhub_load_file` of the same file into that table 
 
 A model with a different dimension means a different vector column, and the order is not
 free: the same `EMBEDDING_*` variables are read by the indexer **and** by the query side of
-`skillhub_similar`. Point them at a 4,096-dimension model while the table still holds
-1,536-dimension vectors and every similarity query raises `different vector dimensions` —
-including the fallback `skillhub_search` makes when keywords miss. An empty table raises
-nothing: there is no row to compare against.
+`skillhub_similar`. Change them first and the indexer refuses to mix the old vectors with
+the new model, so nothing new is indexed; meanwhile the query side asks the new model and
+finds no vectors under its name, so search by meaning returns **nothing** — quietly, which is
+worse than an error. (If the new model keeps the old one's *name* and changes dimension,
+every similarity query raises `different vector dimensions` instead.) `skillhub_overview` →
+`caretaker` says `broken` either way and names the fix.
 
 So:
 

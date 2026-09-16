@@ -263,10 +263,54 @@ async function ensureDimension(dimension: number): Promise<string | null> {
   return String(await rpc("embed_set_dim", { wanted: dimension }));
 }
 
+/** One pass: take up to `batch` objects that lack a current embedding, embed their chunks,
+ *  save each object whole. Returns what it managed. */
+async function onePass(s: Settings, batch: number) {
+  const candidates: Candidate[] = await rpc("embed_candidates", { max_rows: batch, max_chars: s.max_chars });
+  if (!candidates.length) return { objects: 0, saved: 0, chunks: 0, truncated: 0, requests: 0, errors: [] as string[] };
+
+  // Group chunks by object, in the order the store gave them.
+  const objects = new Map<string, Candidate[]>();
+  for (const c of candidates) {
+    const k = `${c.source}/${c.id}`;
+    if (!objects.has(k)) objects.set(k, []);
+    objects.get(k)!.push(c);
+  }
+  const { vectors, errors: embedErrors } = await embed(candidates.map((c) => c.text));
+
+  let saved = 0, savedChunks = 0;
+  const errors: string[] = [];
+  for (const [k, chunks] of objects) {
+    const idx = chunks.map((c) => candidates.indexOf(c));
+    const bad = idx.filter((i) => !vectors[i]);
+    if (bad.length) {
+      errors.push(`${k}: chunk ${candidates[bad[0]].chunk + 1} of ${chunks.length}: ${embedErrors.get(bad[0]) ?? "no vector"}`);
+      continue;
+    }
+    try {
+      await rpc("embed_save_chunks", {
+        p_source: chunks[0].source, p_id: chunks[0].id, p_model: s.model,
+        p_vectors: idx.map((i) => vectors[i]), p_heads: chunks.map((c) => c.head), p_text_hash: chunks[0].text_hash,
+      });
+      saved++; savedChunks += chunks.length;
+    } catch (e) {
+      errors.push(`${k}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  return { objects: objects.size, saved, chunks: savedChunks, truncated: lastTruncated, requests: lastRequests, errors };
+}
+
 Deno.serve(async (req: Request) => {
   const url = new URL(req.url);
   const batch = Math.min(Number(url.searchParams.get("batch") ?? "20"), 100);
   const force = url.searchParams.get("probe") === "1";
+  // Seconds this call may spend. It keeps taking batches until nothing is waiting or the
+  // budget is gone, because the alternative is one batch per cron tick: a store of five
+  // thousand objects rebuilt at a hundred objects every five minutes is four hours with
+  // half an index, and a rebuild is exactly what a model change asks for. Bounded, so the
+  // edge runtime and pg_net both get their answer.
+  const budgetMs = Math.min(Math.max(Number(url.searchParams.get("budget") ?? "60"), 1), 240) * 1000;
+  const deadline = Date.now() + budgetMs;
   const now = () => new Date().toISOString();
 
   if (!EMBEDDING_URL) {
@@ -292,53 +336,33 @@ Deno.serve(async (req: Request) => {
   }
 
   try {
-    const candidates: Candidate[] = await rpc("embed_candidates", { max_rows: batch, max_chars: s.max_chars });
-    if (!candidates.length) {
-      await rpc("embedder_save", { p: { status: "ok", last_run: now(), last_embedded: 0, last_failed: 0, last_truncated: 0, last_error: null } });
-      return Response.json({ status: "done", embedded: 0, comment: "Nothing was waiting.", model: s.model, dimension: s.dimension,
-        max_chars_per_chunk: s.max_chars, limit_from: s.limit_source, ...(dimNote ? { dimension_note: dimNote } : {}) });
-    }
-
-    // Group chunks by object, in the order the store gave them.
-    const objects = new Map<string, Candidate[]>();
-    for (const c of candidates) {
-      const k = `${c.source}/${c.id}`;
-      if (!objects.has(k)) objects.set(k, []);
-      objects.get(k)!.push(c);
-    }
-    const { vectors, errors: embedErrors } = await embed(candidates.map((c) => c.text));
-
-    let saved = 0, savedChunks = 0;
+    let objects = 0, saved = 0, chunks = 0, truncated = 0, requests = 0, passes = 0;
     const errors: string[] = [];
-    for (const [k, chunks] of objects) {
-      const idx = chunks.map((c) => candidates.indexOf(c));
-      const bad = idx.filter((i) => !vectors[i]);
-      if (bad.length) {
-        errors.push(`${k}: chunk ${candidates[bad[0]].chunk + 1} of ${chunks.length}: ${embedErrors.get(bad[0]) ?? "no vector"}`);
-        continue;
-      }
-      try {
-        await rpc("embed_save_chunks", {
-          p_source: chunks[0].source, p_id: chunks[0].id, p_model: s.model,
-          p_vectors: idx.map((i) => vectors[i]), p_heads: chunks.map((c) => c.head), p_text_hash: chunks[0].text_hash,
-        });
-        saved++; savedChunks += chunks.length;
-      } catch (e) {
-        errors.push(`${k}: ${e instanceof Error ? e.message : String(e)}`);
-      }
+    let ranOut = false;
+    for (;;) {
+      const p = await onePass(s, batch);
+      passes++;
+      objects += p.objects; saved += p.saved; chunks += p.chunks;
+      truncated += p.truncated; requests += p.requests; errors.push(...p.errors);
+      if (p.objects === 0) break;                 // nothing left
+      if (p.saved === 0) break;                   // no progress: everything in that pass failed
+      if (Date.now() >= deadline) { ranOut = true; break; }
     }
 
     await rpc("embedder_save", { p: { status: saved || !errors.length ? "ok" : "error", last_run: now(),
-      last_embedded: saved, last_failed: errors.length, last_truncated: lastTruncated, last_error: errors[0] ?? null } });
+      last_embedded: saved, last_failed: errors.length, last_truncated: truncated, last_error: errors[0] ?? null } });
 
     return Response.json({
       status: "done",
       model: s.model, dimension: s.dimension, max_chars_per_chunk: s.max_chars, limit_from: s.limit_source,
-      requests: lastRequests, max_inputs_per_request: EMBEDDING_MAX_INPUTS,
-      objects: objects.size, embedded: saved, chunks: savedChunks,
-      truncated: lastTruncated, failed: errors.length, errors: errors.slice(0, 5),
+      requests, max_inputs_per_request: EMBEDDING_MAX_INPUTS, passes,
+      objects, embedded: saved, chunks,
+      truncated, failed: errors.length, errors: errors.slice(0, 5),
       ...(dimNote ? { dimension_note: dimNote } : {}),
-      comment: objects.size === batch ? "Full batch -- run again to continue." : "Everything that was waiting is embedded.",
+      comment: objects === 0 ? "Nothing was waiting."
+        : ranOut ? `Budget of ${budgetMs / 1000}s spent -- run again to continue.`
+        : errors.length && !saved ? "Nothing could be embedded; see errors."
+        : "Everything that was waiting is embedded.",
     });
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);

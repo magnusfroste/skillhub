@@ -268,6 +268,66 @@ comment on view platform.v_index_status is 'How many objects and chunks are embe
 grant execute on all functions in schema public to service_role, postgres;
 
 -- ---------------------------------------------------------------------------
+-- Rebuilding the index from scratch. The caretaker's call, and the only place in this
+-- store where deleting everything is the right answer.
+--
+-- platform.embeddings is a CACHE, not a record: source and id point at the object, chunk
+-- and head come from platform.chunk_text, text_hash from the object's own text, and the
+-- vector from the model. Every row is derivable from skill_library, notes, documents and
+-- the schema comments, which is why emptying it loses nothing -- and why nothing else in
+-- the store may be emptied at all.
+--
+-- It is needed when the model's dimension changes, because pgvector carries the dimension
+-- in the column type: a 4,096 query against 1,536 rows raises "different vector
+-- dimensions" on every similarity call, and on the fallback search makes when keywords
+-- miss. An empty table raises nothing, so the emptying comes FIRST and the index is dark
+-- for a few minutes instead of broken. A new model of the SAME dimension needs none of
+-- this: the key is (source, id, model, chunk) and similar() filters on the model name, so
+-- the new one indexes alongside the old and EMBEDDING_MODEL decides which is read.
+--
+-- Doing it by hand is two statements in the right order plus a call, and the order is the
+-- part people get wrong -- including here, on 2026-09-16, which is why this exists.
+create or replace function platform.reindex(reason text, by_agent text default 'service_role',
+  indexer_url text default 'http://functions:9000/embed?batch=100&budget=120&probe=1') returns text
+language plpgsql security definer set search_path = platform, public as $$
+declare
+  n bigint; old_model text; old_dim int; note text := '';
+begin
+  if reason is null or length(btrim(reason)) < 10 then
+    raise exception 'Say why you are rebuilding the index. A model change is exactly the kind of event this store exists to make traceable, and the sentence goes in the change log for whoever asks later why search went quiet for ten minutes.';
+  end if;
+  select count(*) into n from platform.embeddings;
+  select e.model, e.dimension into old_model, old_dim from platform.embedder e where e.id = 1;
+  if old_model is null and n > 0 then
+    note := ' The store has no record of which model those vectors came from.';
+  end if;
+
+  truncate platform.embeddings;
+
+  -- Into the change log, like any other write. The index is the caretaker's to rebuild,
+  -- but not silently: skillhub_activity shows this to every agent.
+  insert into platform.events (table_name, operation, row_id, agent, visibility, summary)
+  values ('platform.embeddings', 'delete', null, by_agent, 'public',
+          format('Index rebuilt from scratch: %s (%s vector(s) discarded, model %s at dimension %s)',
+                 btrim(reason), n, coalesce(old_model, 'unknown'), coalesce(old_dim::text, '?')));
+
+  -- Fire the indexer. It probes the endpoint again, sets the column to whatever dimension
+  -- the model returns, and keeps taking batches until its budget is spent -- so a big
+  -- store comes back in minutes rather than one batch per five-minute cron tick.
+  begin
+    perform net.http_post(url := indexer_url,
+      headers := '{"Content-Type":"application/json"}'::jsonb, timeout_milliseconds := 180000);
+  exception when others then
+    note := note || format(' The indexer could not be called (%s); the five-minute cron will rebuild instead.', sqlerrm);
+  end;
+
+  return format('Index emptied: %s vector(s) gone, rebuilding now.%s Watch it with: select public.embedder_status();  -- meaning search is off until "waiting" reaches 0.', n, note);
+end $$;
+comment on function platform.reindex(text, text, text) is 'Empties platform.embeddings and rebuilds it. For a model whose dimension differs from the current one -- do this BEFORE pointing EMBEDDING_* at it. Requires a reason, which goes in the change log. The index is a cache: nothing is lost.';
+revoke execute on function platform.reindex(text, text, text) from public, anon, authenticated;
+grant execute on function platform.reindex(text, text, text) to service_role, postgres;
+
+-- ---------------------------------------------------------------------------
 -- Scheduling: the index should follow the content without anyone asking it to.
 -- pg_cron is already in shared_preload_libraries in the supabase/postgres image, and
 -- pg_net makes the HTTP call. The function is reached internally, without the gateway
@@ -301,7 +361,7 @@ end $$;
 
 select cron.schedule('embed', '*/5 * * * *', $job$
   select net.http_post(
-    url := 'http://functions:9000/embed?batch=100',
+    url := 'http://functions:9000/embed?batch=100&budget=120',
     headers := '{"Content-Type":"application/json"}'::jsonb,
     timeout_milliseconds := 120000);
 $job$);

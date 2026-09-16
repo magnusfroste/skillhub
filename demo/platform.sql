@@ -438,8 +438,24 @@ begin
   end if;
 end $pk$;
 comment on table platform.embeddings is 'One embedding per chunk of an object and model. Filled by the embedding job. text_hash (of the whole object) decides whether it is out of date; head is the first line of the chunk, so a hit can say which section matched.';
-create index if not exists embeddings_vector_idx on platform.embeddings
-  using hnsw (vector vector_cosine_ops);
+-- The index has to match the dimension the column happens to carry, which is not 1,536 on
+-- an instance whose model returns something else: HNSW takes vector up to 2,000 and
+-- halfvec up to 4,000, and refuses outright above that. Written unconditionally until
+-- 2026-09-16, when the seed failed on the first instance running a 4,096-dimension model
+-- -- and because platform.sql failed, every file after it was skipped. Same three branches
+-- as platform.set_vector_dim(), which owns this from platform_vector.sql onwards.
+do $idx$
+declare d int;
+begin
+  if to_regclass('platform.embeddings_vector_idx') is not null then return; end if;
+  select atttypmod into d from pg_attribute
+   where attrelid = 'platform.embeddings'::regclass and attname = 'vector';
+  if d <= 2000 then
+    execute 'create index embeddings_vector_idx on platform.embeddings using hnsw (vector vector_cosine_ops)';
+  elsif d <= 4000 then
+    execute format('create index embeddings_vector_idx on platform.embeddings using hnsw ((vector::halfvec(%s)) halfvec_cosine_ops)', d);
+  end if;   -- above 4,000 there is no index; searches are exact scans, which is fine here
+end $idx$;
 
 -- platform.similar() is built by platform.rebuild_similar() in platform_vector.sql, because its
 -- signature carries the dimension. It used to be defined here too, at vector(1536), and on the

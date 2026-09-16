@@ -141,6 +141,15 @@ check "the dimension can be changed by function while the table is empty" \
 check "and similar() follows the dimension" \
   "select count(*) from platform.similar(array_fill(0::real,array[1024])::vector, 'probe', 3)" "0"
 q "select platform.set_vector_dim(1536)" >/dev/null
+# Rebuilding the index is the caretaker's one legitimate delete, and it has to say why --
+# the sentence goes in the change log, because "search went quiet for ten minutes" needs an
+# answer later. Written 2026-09-16 after doing the same thing by hand in the wrong order.
+check "a reindex without a reason is refused" \
+  "select coalesce((select 'built' from (select platform.reindex('oops')) z), '')" "ERROR:  Say why you are rebuilding the index. A model change is exactly the kind of event this store exists to make traceable, and the sentence goes in the change log for whoever asks later why search went quiet for ten minutes."
+q "select public.embed_save_chunks('note','reindex-probe','probe', jsonb_build_array(to_jsonb(array_fill(0::real,array[1536]))), '[\"x\"]'::jsonb, 'h')" >/dev/null
+q "select platform.reindex('switching to the private model for the demo', 'service_role')" >/dev/null
+check "a reindex with a reason empties the index and logs it" \
+  "select (select count(*) from platform.embeddings)::text || ':' || (select count(*) from platform.events where table_name='platform.embeddings' and summary like '%switching to the private model%')::text" "0:1"
 check "retiring the note works too" \
   "select (public.skillhub_retire('agent_01','note',(select id::text from public.notes where title='Seed test'),'seed test cleanup') ? 'retired_by')::text" "true"
 

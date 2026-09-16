@@ -267,7 +267,13 @@ async function settings(force: boolean): Promise<Settings> {
 
   const dimension = (await embedOnce(["probe"]))[0].length;
   let max_tokens: number | null = null, max_chars: number, limit_source: string;
-  let ratio = CHARS_PER_TOKEN;
+  // Held steady per model. The measurement samples whatever is waiting to be indexed, so a
+  // day with a table of part numbers in the queue measures 1.3 characters per token and a
+  // day with prose measures 3.9 -- and a chunk size that follows it moves back and forth,
+  // which health would rightly report as the index being cut at the wrong size. The store
+  // that once held content needing the smaller figure still holds it. A new model starts over.
+  const prevRatio = same ? Number(prev.chars_per_token) || 0 : 0;
+  let ratio = prevRatio || CHARS_PER_TOKEN;
   if (EMBEDDING_MAX_CHARS > 0) {
     max_chars = EMBEDDING_MAX_CHARS; limit_source = "env";
     const said = await askServerForLimit();       // still worth knowing, for the truncation count
@@ -275,7 +281,8 @@ async function settings(force: boolean): Promise<Settings> {
   } else {
     const said = await askServerForLimit();
     if (said) {
-      const m = await measureCharsPerToken(); ratio = m.ratio;
+      const m = await measureCharsPerToken();
+      ratio = prevRatio && m.measured ? Math.min(prevRatio, m.ratio) : m.ratio;
       max_tokens = said.tokens; limit_source = said.from + (m.measured ? `, ${ratio.toFixed(2)} chars/token measured` : "");
       max_chars = Math.floor(said.tokens * ratio * 0.85);
     } else {
@@ -337,6 +344,7 @@ async function onePass(s: Settings, batch: number) {
       await rpc("embed_save_chunks", {
         p_source: chunks[0].source, p_id: chunks[0].id, p_model: s.model,
         p_vectors: idx.map((i) => vectors[i]), p_heads: chunks.map((c) => c.head), p_text_hash: chunks[0].text_hash,
+        p_chunk_chars: s.max_chars,
       });
       saved++; savedChunks += chunks.length;
     } catch (e) {

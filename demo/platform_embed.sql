@@ -146,19 +146,26 @@ comment on function public.embed_save(text,text,text,jsonb,text) is 'Writes one 
 -- All chunks of one object in one transaction: what was there for the object goes, what the
 -- indexer just computed comes in. p_vectors is a JSON array of arrays, p_heads the chunk
 -- heads in the same order. Nothing is saved for an object until every chunk embedded.
-create or replace function public.embed_save_chunks(p_source text, p_id text, p_model text, p_vectors jsonb, p_heads jsonb, p_text_hash text)
+-- The chunk size a vector was cut at. The text hash says whether the CONTENT changed; nothing
+-- said whether the WAY it was cut changed, so an instance whose chunk size moved from 21,600
+-- characters to 6,700 would keep its old, coarse vectors for ever, and health would say ok.
+alter table platform.embeddings add column if not exists chunk_chars int;
+comment on column platform.embeddings.chunk_chars is 'The chunk size, in characters, this vector was cut at. platform.health() compares it with the size in force now.';
+
+drop function if exists public.embed_save_chunks(text,text,text,jsonb,jsonb,text);
+create or replace function public.embed_save_chunks(p_source text, p_id text, p_model text, p_vectors jsonb, p_heads jsonb, p_text_hash text, p_chunk_chars int default null)
 returns jsonb language plpgsql security definer set search_path = public, platform as $$
 declare k int; n int := jsonb_array_length(p_vectors);
 begin
   if n = 0 then raise exception 'No vectors to save for %/%.', p_source, p_id; end if;
   delete from platform.embeddings where source = p_source and id = p_id and model = p_model;
   for k in 0 .. n - 1 loop
-    insert into platform.embeddings (source, id, model, chunk, head, vector, text_hash)
-    values (p_source, p_id, p_model, k, left(p_heads ->> k, 80), (p_vectors -> k #>> '{}')::vector, p_text_hash);
+    insert into platform.embeddings (source, id, model, chunk, head, vector, text_hash, chunk_chars)
+    values (p_source, p_id, p_model, k, left(p_heads ->> k, 80), (p_vectors -> k #>> '{}')::vector, p_text_hash, p_chunk_chars);
   end loop;
   return jsonb_build_object('source', p_source, 'id', p_id, 'model', p_model, 'chunks', n);
 end $$;
-comment on function public.embed_save_chunks(text,text,text,jsonb,jsonb,text) is 'Replaces every chunk of one object and model with the vectors given, in one transaction.';
+comment on function public.embed_save_chunks(text,text,text,jsonb,jsonb,text,int) is 'Replaces every chunk of one object and model with the vectors given, in one transaction.';
 
 -- ---------------------------------------------------------------------------
 -- The embedder, as the store knows it. One row. The indexer probes the endpoint -- which
@@ -186,6 +193,13 @@ create table if not exists platform.embedder (
 alter table platform.embedder add column if not exists last_truncated int;
 alter table platform.embedder add column if not exists chars_per_token numeric;
 comment on table platform.embedder is 'What the indexer found out about the embedding endpoint, and how its last run went. Written by the indexer; read by skillhub_overview.';
+
+-- Vectors written before chunk_chars existed were cut at the size the embedder row still
+-- holds: the seed runs at boot, before the indexer has probed with any new setting. Once.
+update platform.embeddings
+   set chunk_chars = (select max_chars from platform.embedder where id = 1)
+ where chunk_chars is null
+   and exists (select 1 from platform.embedder where id = 1 and max_chars is not null);
 
 create or replace function public.embedder_save(p jsonb) returns jsonb
 language plpgsql security definer set search_path = public, platform as $$

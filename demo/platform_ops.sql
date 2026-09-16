@@ -142,6 +142,25 @@ begin
       'run', null);
   end if;
 
+  -- The index was cut at one chunk size and the store is now set to another. Nothing fails
+  -- and nothing is waiting -- the text did not change, so nothing is re-embedded -- which is
+  -- exactly why it needs saying: long content stays matched in pieces of the old size until
+  -- somebody rebuilds. A quarter either way, so a measured ratio drifting a little does not
+  -- nag; the ratio is also held steady per model by the indexer.
+  if e.status = 'ok' and e.max_chars is not null then
+    select count(*), mode() within group (order by chunk_chars)
+      into waiting_n, emb_rows
+      from platform.embeddings
+     where chunk_chars is not null and abs(chunk_chars - e.max_chars) > 0.25 * e.max_chars;
+    if waiting_n > 0 then
+      cks := cks || jsonb_build_object('check','chunk size','state','attention',
+        'detail', format('The store now cuts text into chunks of %s characters, but %s vector(s) were cut at %s. Search still works; long content is matched in pieces of the old size, so a passage deep in a long text can be missed, until the index is rebuilt. Short objects are one chunk either way and come back unchanged.',
+                         e.max_chars, waiting_n, emb_rows),
+        'run', format('select platform.reindex(''chunk size changed from %s to %s characters'');', emb_rows, e.max_chars),
+        'changes', 'Empties the vector index and rebuilds it at the chunk size in force. Nothing but the index is touched and nothing is lost; search by meaning is thin for the minutes it takes.');
+    end if;
+  end if;
+
   -- A queue that never empties is the shape of a failure that retries for ever.
   select count(distinct (c->>'source', c->>'id')) into waiting_n
     from jsonb_array_elements(public.embed_candidates(1000, 100000)) c;

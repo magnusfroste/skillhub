@@ -257,6 +257,17 @@ q "select platform.set_vector_dim(3072)" >/dev/null
 printf "   %-46s %s\n" "and the half-precision one at 3,072" "$( [ "$(planned 3072)" = yes ] && echo ok || { echo "FAILED -- $(plan 3072 | head -3 | tr '\n' ' ')"; } )"
 [ "$(planned 3072)" = yes ] || fail=1
 q "select platform.set_vector_dim(1536)" >/dev/null
+# A changed chunk size re-embeds nothing -- the text did not change -- so the index stays cut
+# the old way and nothing says so. Health has to. A quarter either way, so a small drift is quiet.
+q "truncate platform.embeddings" >/dev/null
+q "select public.embedder_save(jsonb_build_object('url','http://probe','model','probe','dimension',1536,'max_chars',6700,'limit_source','env','status','ok'))" >/dev/null
+q "select public.embed_save_chunks('schema','notes','probe', jsonb_build_array(to_jsonb(array_fill(0.1::real,array[1536]))), to_jsonb(array['x']), 'h', 21600)" >/dev/null
+check "an index cut at another chunk size is reported, with the rebuild as a decision" \
+  "select (select c->>'state' from jsonb_array_elements(platform.health()->'checks') c where c->>'check'='chunk size') || ':' || (select count(*) from jsonb_array_elements(platform.health()->'decide') d where d->>'call' like '%platform.reindex(%chunk size changed from 21600 to 6700%')::text" "attention:1"
+q "select public.embed_save_chunks('schema','notes','probe', jsonb_build_array(to_jsonb(array_fill(0.1::real,array[1536]))), to_jsonb(array['x']), 'h', 6900)" >/dev/null
+check "and a drift inside a quarter is not" \
+  "select count(*) from jsonb_array_elements(platform.health()->'checks') c where c->>'check'='chunk size'" "0"
+q "truncate platform.embeddings; delete from platform.embedder" >/dev/null
 check "retiring the note works too" \
   "select (public.skillhub_retire('agent_01','note',(select id::text from public.notes where title='Seed test'),'seed test cleanup') ? 'retired_by')::text" "true"
 

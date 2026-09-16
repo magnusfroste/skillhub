@@ -81,17 +81,28 @@ async function rpc(fn: string, args: Record<string, unknown>): Promise<any> {
 // Tokens the endpoint reported for the last request (usage.prompt_tokens), 0 if it did not
 // say. The probe uses it to measure characters per token for this tokenizer.
 let lastPromptTokens = 0;
-// On vLLM, ask it to truncate at its own limit rather than refuse -- set automatically once
-// the probe has identified the server, or by hand with EMBEDDING_TRUNCATE_TOKENS.
+// Truncation is a RETRY, never the default. Armed on the first request, vLLM cuts an
+// over-budget input instead of refusing it -- and a rule indexed in part is worse than one
+// not indexed, because nothing says so. It was not observable either: usage.prompt_tokens
+// is the sum over the whole request, so a batch of eight hides which input was cut, and an
+// estimate from the assumed ratio can never fire because the chunk size is derived from
+// that same ratio. Measured 2026-09-16 against a client vLLM: eight chunks of 6,773
+// characters of part numbers and hex came back at exactly 8 x 2,048 tokens -- every one
+// cut -- and the counter said zero.
+//
+// So: send without it. An over-budget input makes the request fail, the failure isolates
+// down to the single input that caused it, and only then is truncation asked for. Then the
+// cut is exactly one input, we know which, and the count is a fact rather than a guess.
+// EMBEDDING_TRUNCATE_TOKENS still forces it on every request, for an endpoint that needs it.
 let truncateTokens = EMBEDDING_TRUNCATE_TOKENS;
 
-async function embedOnce(texts: string[]): Promise<number[][]> {
+async function embedOnce(texts: string[], truncate = truncateTokens): Promise<number[][]> {
   if (!EMBEDDING_URL) throw new Error("EMBEDDING_URL is not set.");
   const res = await fetch(EMBEDDING_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json", ...(EMBEDDING_KEY ? { Authorization: `Bearer ${EMBEDDING_KEY}` } : {}) },
     body: JSON.stringify({ model: EMBEDDING_MODEL, input: texts,
-      ...(truncateTokens ? { truncate_prompt_tokens: truncateTokens } : {}) }),
+      ...(truncate ? { truncate_prompt_tokens: truncate } : {}) }),
   });
   const text = await res.text();
   if (!res.ok) throw new Error(`The embeddings endpoint answered ${res.status}: ${text.slice(0, 300)}`);
@@ -113,14 +124,36 @@ const RATIO_SAMPLE = (
   "Nästa månads export laddas med skillhub_load_file mot samma tabell och upsertas på ticket_no utan att någon skriver om raderna. "
 ).repeat(3).slice(0, 1000);
 
+/** A sample of what this store actually holds, because that is what has to fit. Prose is
+ *  the wrong yardstick: the same endpoint that spends one token per 3.9 characters of
+ *  Swedish spends one per 3.3 on a table of part numbers and hex, and a chunk sized on the
+ *  first is cut when it holds the second. Falls back to the prose sample on an empty store. */
+async function ratioSamples(): Promise<string[]> {
+  try {
+    const c = await rpc("embed_candidates", { max_rows: 8, max_chars: 100000 }) as Candidate[];
+    const longest = (c ?? []).map((x) => x.text).filter((t) => t.length >= 500)
+      .sort((a, b) => b.length - a.length).slice(0, 3).map((t) => t.slice(0, 2000));
+    if (longest.length) return longest;
+  } catch { /* an empty or unreachable store: the prose sample still says something */ }
+  return [RATIO_SAMPLE];
+}
+
 /** Characters per token for this endpoint's tokenizer, measured; the constant if the endpoint
  *  reports no usage. */
 async function measureCharsPerToken(): Promise<{ ratio: number; measured: boolean }> {
-  try {
-    await embedOnce([RATIO_SAMPLE]);
-    if (lastPromptTokens > 0) return { ratio: RATIO_SAMPLE.length / lastPromptTokens, measured: true };
-  } catch { /* fall through */ }
-  return { ratio: CHARS_PER_TOKEN, measured: false };
+  // The WORST of a few, not an average: chunks are sized once for everything the store
+  // holds, so the sample that fits fewest characters per token is the one that decides.
+  let worst = 0;
+  for (const sample of await ratioSamples()) {
+    try {
+      await embedOnce([sample], 0);
+      if (lastPromptTokens > 0) {
+        const r = sample.length / lastPromptTokens;
+        worst = worst === 0 ? r : Math.min(worst, r);
+      }
+    } catch { /* try the next one */ }
+  }
+  return worst > 0 ? { ratio: worst, measured: true } : { ratio: CHARS_PER_TOKEN, measured: false };
 }
 
 /** Embeds texts in slices the endpoint accepts. A failed slice is retried one text at a
@@ -134,33 +167,44 @@ async function measureCharsPerToken(): Promise<{ ratio: number; measured: boolea
  *  than the measured ratio allows is counted as suspected. Both make the same number go up. */
 let lastRequests = 0;
 let lastTruncated = 0;
+let longestCut = 0;       // characters of the longest input that had to be cut
 let tokenBudget = 0;      // max_tokens, once the probe knows it
 let charsPerToken = CHARS_PER_TOKEN;
-function overBudget(text: string): boolean {
-  return tokenBudget > 0 && text.length / charsPerToken > tokenBudget;
-}
-async function embed(texts: string[]): Promise<{ vectors: (number[] | null)[]; errors: Map<number, string> }> {
+async function embed(texts: string[]): Promise<{ vectors: (number[] | null)[]; errors: Map<number, string>; cut: Set<number> }> {
   const vectors: (number[] | null)[] = new Array(texts.length).fill(null);
   const errors = new Map<number, string>();
-  lastRequests = 0; lastTruncated = 0;
+  const cut = new Set<number>();
+  lastRequests = 0; lastTruncated = 0; longestCut = 0;
   for (let i = 0; i < texts.length; i += EMBEDDING_MAX_INPUTS) {
     const slice = texts.slice(i, i + EMBEDDING_MAX_INPUTS);
     try {
       const vs = await embedOnce(slice); lastRequests++;
-      if (slice.length === 1 && tokenBudget > 0 && lastPromptTokens === tokenBudget) lastTruncated++;
-      else lastTruncated += slice.filter(overBudget).length;
       vs.forEach((v, j) => vectors[i + j] = v);
     } catch (_e) {
+      // Something in this slice was refused. Find out which, keep the rest.
       for (let j = 0; j < slice.length; j++) {
-        try {
-          vectors[i + j] = (await embedOnce([slice[j]]))[0]; lastRequests++;
-          if (tokenBudget > 0 && lastPromptTokens === tokenBudget) lastTruncated++;
+        try { vectors[i + j] = (await embedOnce([slice[j]]))[0]; lastRequests++; continue; }
+        catch (e2) {
+          // Alone and still refused. If it is a length problem, truncation gets it in --
+          // and now we know exactly which input was cut and how long it was.
+          const budget = truncateTokens || tokenBudget;
+          if (budget) {
+            try {
+              await embedOnce([slice[j]], budget); lastRequests++;
+              // The vector is deliberately NOT kept. A chunk that had to be cut is a chunk
+              // the store sized wrong, and half a rule indexed as if it were whole is the
+              // failure this is here to prevent. The object stays a candidate, the ratio
+              // comes down, and the next run embeds it in pieces that fit.
+              cut.add(i + j); lastTruncated++; longestCut = Math.max(longestCut, slice[j].length);
+              continue;
+            } catch { /* not a length problem, or truncation is not supported */ }
+          }
+          errors.set(i + j, e2 instanceof Error ? e2.message : String(e2));
         }
-        catch (e2) { errors.set(i + j, e2 instanceof Error ? e2.message : String(e2)); }
       }
     }
   }
-  return { vectors, errors };
+  return { vectors, errors, cut };
 }
 
 // ---- Finding out what the endpoint is ---------------------------------------------------
@@ -250,8 +294,7 @@ async function settings(force: boolean): Promise<Settings> {
  *  known to be vLLM, ask -- the chunk size keeps this from ever triggering, and if the
  *  ratio was still wrong the chunk is cut at the limit instead of lost. */
 function armTruncation(s: Settings) {
-  if (!EMBEDDING_TRUNCATE_TOKENS && s.limit_source?.startsWith("vllm") && s.max_tokens) truncateTokens = s.max_tokens;
-  tokenBudget = truncateTokens || s.max_tokens || 0;
+  tokenBudget = EMBEDDING_TRUNCATE_TOKENS || s.max_tokens || 0;
   charsPerToken = Number(s.chars_per_token) || CHARS_PER_TOKEN;
 }
 
@@ -267,7 +310,7 @@ async function ensureDimension(dimension: number): Promise<string | null> {
  *  save each object whole. Returns what it managed. */
 async function onePass(s: Settings, batch: number) {
   const candidates: Candidate[] = await rpc("embed_candidates", { max_rows: batch, max_chars: s.max_chars });
-  if (!candidates.length) return { objects: 0, saved: 0, chunks: 0, truncated: 0, requests: 0, errors: [] as string[] };
+  if (!candidates.length) return { objects: 0, saved: 0, chunks: 0, truncated: 0, cutLongest: 0, requests: 0, errors: [] as string[] };
 
   // Group chunks by object, in the order the store gave them.
   const objects = new Map<string, Candidate[]>();
@@ -276,7 +319,7 @@ async function onePass(s: Settings, batch: number) {
     if (!objects.has(k)) objects.set(k, []);
     objects.get(k)!.push(c);
   }
-  const { vectors, errors: embedErrors } = await embed(candidates.map((c) => c.text));
+  const { vectors, errors: embedErrors, cut } = await embed(candidates.map((c) => c.text));
 
   let saved = 0, savedChunks = 0;
   const errors: string[] = [];
@@ -284,7 +327,10 @@ async function onePass(s: Settings, batch: number) {
     const idx = chunks.map((c) => candidates.indexOf(c));
     const bad = idx.filter((i) => !vectors[i]);
     if (bad.length) {
-      errors.push(`${k}: chunk ${candidates[bad[0]].chunk + 1} of ${chunks.length}: ${embedErrors.get(bad[0]) ?? "no vector"}`);
+      const why = cut.has(bad[0])
+        ? `too long for the model at this chunk size (${candidates[bad[0]].text.length} characters); left unindexed on purpose rather than indexed in part`
+        : embedErrors.get(bad[0]) ?? "no vector";
+      errors.push(`${k}: chunk ${candidates[bad[0]].chunk + 1} of ${chunks.length}: ${why}`);
       continue;
     }
     try {
@@ -297,7 +343,8 @@ async function onePass(s: Settings, batch: number) {
       errors.push(`${k}: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
-  return { objects: objects.size, saved, chunks: savedChunks, truncated: lastTruncated, requests: lastRequests, errors };
+  return { objects: objects.size, saved, chunks: savedChunks, truncated: lastTruncated,
+           cutLongest: longestCut, requests: lastRequests, errors };
 }
 
 Deno.serve(async (req: Request) => {
@@ -341,7 +388,7 @@ Deno.serve(async (req: Request) => {
   try { pruned = Number(await rpc("embed_prune", {})) || 0; } catch { /* not fatal */ }
 
   try {
-    let objects = 0, saved = 0, chunks = 0, truncated = 0, requests = 0, passes = 0;
+    let objects = 0, saved = 0, chunks = 0, truncated = 0, requests = 0, passes = 0, cutLongest = 0;
     const errors: string[] = [];
     let ranOut = false;
     for (;;) {
@@ -349,13 +396,31 @@ Deno.serve(async (req: Request) => {
       passes++;
       objects += p.objects; saved += p.saved; chunks += p.chunks;
       truncated += p.truncated; requests += p.requests; errors.push(...p.errors);
+      cutLongest = Math.max(cutLongest, p.cutLongest);
+      if (p.truncated > 0) break;   // the ratio is wrong for this content; resize, then go on
       if (p.objects === 0) break;                 // nothing left
       if (p.saved === 0) break;                   // no progress: everything in that pass failed
       if (Date.now() >= deadline) { ranOut = true; break; }
     }
 
+    // A cut is a measurement: that input held more than the budget in the characters it
+    // had, so the true ratio is below length/budget. Record a ratio under that and the
+    // next run's chunks are smaller -- the store corrects itself instead of waiting for
+    // somebody to notice a number nobody is watching.
+    let ratioNote: string | null = null;
+    if (truncated > 0 && s.limit_source === "env") {
+      ratioNote = `${truncated} chunk(s) did not fit and were left unindexed. EMBEDDING_MAX_CHARS is pinning the chunk size at ${s.max_chars}; lower it (this content needs about ${Math.floor((cutLongest / tokenBudget) * 0.9 * tokenBudget * 0.85)}) or unset it and let the probe size them.`;
+      await rpc("embedder_save", { p: { last_error: ratioNote } });
+    } else if (truncated > 0 && cutLongest > 0 && tokenBudget > 0) {
+      const safer = Math.max(1, Math.min(Number(s.chars_per_token) || CHARS_PER_TOKEN, (cutLongest / tokenBudget) * 0.9));
+      if (safer < (Number(s.chars_per_token) || CHARS_PER_TOKEN)) {
+        await rpc("embedder_save", { p: { chars_per_token: safer, max_chars: Math.floor(tokenBudget * safer * 0.85) } });
+        ratioNote = `Chunks were too big for this content: ${truncated} did not fit and were left unindexed. Characters per token lowered to ${safer.toFixed(2)} and chunk size to ${Math.floor(tokenBudget * safer * 0.85)}; the next run embeds them in pieces that fit.`;
+      }
+    }
     await rpc("embedder_save", { p: { status: saved || !errors.length ? "ok" : "error", last_run: now(),
-      last_embedded: saved, last_failed: errors.length, last_truncated: truncated, last_error: errors[0] ?? null } });
+      last_embedded: saved, last_failed: errors.length, last_truncated: truncated,
+      last_error: ratioNote ?? errors[0] ?? null } });
 
     return Response.json({
       status: "done",
@@ -363,6 +428,7 @@ Deno.serve(async (req: Request) => {
       requests, max_inputs_per_request: EMBEDDING_MAX_INPUTS, passes,
       objects, embedded: saved, chunks, pruned,
       truncated, failed: errors.length, errors: errors.slice(0, 5),
+      ...(ratioNote ? { resized: ratioNote } : {}),
       ...(dimNote ? { dimension_note: dimNote } : {}),
       comment: objects === 0 ? "Nothing was waiting."
         : ranOut ? `Budget of ${budgetMs / 1000}s spent -- run again to continue.`

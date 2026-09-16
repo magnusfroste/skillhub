@@ -239,15 +239,14 @@ language sql stable security definer set search_path = public, platform as $$
     'waiting', jsonb_array_length(public.embed_candidates(1000, 100000)),
     'chars_per_token', e.chars_per_token,
     'last_run', e.last_run::timestamp(0), 'last_embedded', e.last_embedded, 'last_failed', e.last_failed,
-    -- Truncation is the quiet failure of this design: on vLLM an over-budget chunk is CUT,
-    -- not refused, and a partially indexed rule is worse than an unindexed one because
-    -- nothing says so. Any number above zero here means the chunk size is too generous for
-    -- this content -- set EMBEDDING_MAX_CHARS lower.
+    -- Chunks that did not fit the model and were therefore NOT indexed. Above zero means
+    -- the chunk size is too generous for this content; the indexer lowers it by itself
+    -- unless EMBEDDING_MAX_CHARS is pinning it.
     'last_truncated', e.last_truncated,
     'last_error', e.last_error,
     'note', case when e.status is null or e.status = 'off'
                  then 'EMBEDDING_URL is not set: keyword search works, search by meaning does not, and new content is found only by its words. Set EMBEDDING_URL, EMBEDDING_KEY and EMBEDDING_MODEL; the indexer works out the rest.'
-                 when coalesce(e.last_truncated, 0) > 0 then 'The last run CUT ' || e.last_truncated || ' chunk(s) at the model''s input limit: that content is indexed in part, silently. Set EMBEDDING_MAX_CHARS below max_chars_per_chunk and re-run.'
+                 when coalesce(e.last_truncated, 0) > 0 then e.last_truncated || ' chunk(s) did not fit the model''s input limit, so that object is NOT indexed -- deliberately, because a rule indexed in part is worse than one nobody can find. The chunk size has been lowered and the next run takes it again; if last_error says the limit came from EMBEDDING_MAX_CHARS, lower that instead.'
                  when e.status = 'error' then 'The indexer''s last run failed; see last_error. Keyword search is unaffected.'
                  else null end)
   from (select * from platform.embedder where id = 1

@@ -336,11 +336,14 @@ begin
   if reason is null or length(btrim(reason)) < 10 then
     raise exception 'Say why you are rebuilding the index. A model change is exactly the kind of event this store exists to make traceable, and the sentence goes in the change log for whoever asks later why search went quiet for ten minutes.';
   end if;
-  select count(*) into n from platform.embeddings;
-  select e.model, e.dimension into old_model, old_dim from platform.embedder e where e.id = 1;
-  if old_model is null and n > 0 then
-    note := ' The store has no record of which model those vectors came from.';
-  end if;
+  -- What is being discarded, read off the vectors themselves. platform.embedder describes
+  -- the model most recently PROBED, and after a model change that is the new one: the first
+  -- caretaker rebuild (2026-09-16) logged "67 vectors discarded, model text-embedding-3-small
+  -- at 1536" for 67 vectors of 'embed' at 4,096. A log line that names the wrong model is
+  -- worse than one that names none.
+  select count(*), string_agg(distinct model, ', ') into n, old_model from platform.embeddings;
+  select atttypmod into old_dim from pg_attribute
+   where attrelid = 'platform.embeddings'::regclass and attname = 'vector';
 
   truncate platform.embeddings;
 
@@ -348,8 +351,9 @@ begin
   -- but not silently: skillhub_activity shows this to every agent.
   insert into platform.events (table_name, operation, row_id, agent, visibility, summary)
   values ('platform.embeddings', 'delete', null, by_agent, 'public',
-          format('Index rebuilt from scratch: %s (%s vector(s) discarded, model %s at dimension %s)',
-                 btrim(reason), n, coalesce(old_model, 'unknown'), coalesce(old_dim::text, '?')));
+          format('Index rebuilt from scratch: %s (%s vector(s) discarded%s)',
+                 btrim(reason), n,
+                 case when n = 0 then '' else format(' -- model %s at dimension %s', old_model, old_dim) end));
 
   -- Fire the indexer. It probes the endpoint again, sets the column to whatever dimension
   -- the model returns, and keeps taking batches until its budget is spent -- so a big

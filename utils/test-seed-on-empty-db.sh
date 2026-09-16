@@ -171,6 +171,10 @@ q "select public.embed_save_chunks('note','reindex-probe','probe', jsonb_build_a
 q "select platform.reindex('switching to the private model for the demo', 'service_role')" >/dev/null
 check "a reindex with a reason empties the index and logs it" \
   "select (select count(*) from platform.embeddings)::text || ':' || (select count(*) from platform.events where table_name='platform.embeddings' and summary like '%switching to the private model%')::text" "0:1"
+# The log line names what was DISCARDED, read off the vectors -- not the model last probed,
+# which after a model change is the new one.
+check "the log names the model the discarded vectors came from" \
+  "select (summary like '%model probe at dimension 1536%')::text from platform.events where table_name='platform.embeddings' order by at desc limit 1" "true"
 # An agent could not see what became of its own structure request: on the demo 2026-09-16
 # agent_04 filed one, saw it still open, and concluded the delivery was done and waiting.
 # Write and read in separate statements -- skillhub_overview is STABLE and reads the

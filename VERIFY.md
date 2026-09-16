@@ -1,11 +1,12 @@
 # Verifying your installation
 
-Five receipts, in the order they should be run. Each one answers a different question, and
+Six receipts, in the order they should be run. Each one answers a different question, and
 each one exists because the answer was once wrong while everything looked fine. Run them in
 this order the first time; run the ones that apply after any change.
 
 | # | Question | Receipt | Touches your instance? |
 |---|---|---|---|
+| 0 | Will search by meaning work against your embedder? | `utils/check-embedder.sh` | No — before you install anything |
 | 1 | Does this repository build a working store from nothing? | `utils/test-seed-on-empty-db.sh` | No — a throwaway database |
 | 2 | Is what is running what is committed? | `docker logs supabase-seed` + `utils/check-deployed-drift.sh` | Read-only |
 | 3 | Do the fifteen chat tools answer through the gateway? | `utils/smoke-test-tools.sh` | Writes, then retires what it wrote |
@@ -13,6 +14,30 @@ this order the first time; run the ones that apply after any change.
 | 5 | Does a real client adopt the current revision? | `utils/probe-mcp-era.py` | Read-only, run inside a client |
 
 Then one thing no script can do for you: ask an agent a question whose answer you know.
+
+---
+
+## 0. Before you install: `check-embedder.sh`
+
+```sh
+sh utils/check-embedder.sh http://10.0.0.5:8008/v1/embeddings embed
+```
+
+Run it **from the machine that will host the store**, not from a laptop. It asks the
+endpoint what the indexer will ask it, in the same order, and prints what the store would
+conclude: the dimension the model returns and therefore which index the vector store gets,
+the input limit it reports, characters per token measured on this store's kind of text and
+the chunk size that follows, whether a batch of eight is accepted, and what happens to an
+input over the limit — refused, cut by itself, or cut on request.
+
+It changes nothing and needs no database. Measured against a client's Qwen3-Embedding-8B on
+vLLM: 4,096 dimensions and therefore no index, 2,048 tokens from `/v1/models`, 4.12
+characters per token, a 7,163-character chunk, eight inputs fine, over-limit refused with
+400 and `truncate_prompt_tokens` accepted.
+
+Why it exists: half of what goes wrong with a private embedder is that it answers from
+where you tested and not from where the container runs, and the store's way of saying so is
+`the endpoint answered 404` — five minutes later, in a cron.
 
 ---
 

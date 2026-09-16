@@ -488,13 +488,11 @@ services:
       SUPABASE_ANON_KEY: ${ANON_KEY}
       SUPABASE_SERVICE_ROLE_KEY: ${SERVICE_ROLE_KEY}
       # skillhub: private embeddings endpoint, read by the edge function `embed`.
-      # Set in Easypanel's Environment; without them the function skips embedding.
-      # EMBEDDING_DIM must match platform.embeddings.vector -- vector(1536) by default;
-      # see demo/platform_vector.sql for another dimension.
+      # Set in Easypanel's Environment; without them the function skips embedding. The
+      # dimension and the input size are probed by the function, not configured.
       EMBEDDING_URL: ${EMBEDDING_URL:-}
       EMBEDDING_KEY: ${EMBEDDING_KEY:-}
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-}
-      EMBEDDING_DIM: ${EMBEDDING_DIM:-1536}
       EMBEDDING_MAX_INPUTS: ${EMBEDDING_MAX_INPUTS:-8}
       EMBEDDING_MAX_CHARS: ${EMBEDDING_MAX_CHARS:-0}
       EMBEDDING_TRUNCATE_TOKENS: ${EMBEDDING_TRUNCATE_TOKENS:-}

@@ -49,6 +49,10 @@ The seed log should show nine files and `ok` after each, ending in `Done. Re-run
 changes nothing on an up-to-date database.` If a file says `FAILED`, the message under it is
 the cause; the store is incomplete until it passes, and it is safe to re-run by hand.
 
+Then `skillhub_overview` → `index`, as any agent: expect `meaning_search: on`, the model and
+dimension the indexer found, `waiting: 0` and `last_error: null`. That is the embedding
+receipt; the indexer probes the endpoint itself, so a wrong guess shows up here, not in a log.
+
 The drift check compares the clone you edit with the clone the containers mount. Expect
 `deployed is 0 commit(s) behind`, `none` under in-place edits, and `same` for the four files
 the containers read. Anything else means what is running is not what git says — which is how
@@ -174,6 +178,9 @@ Two more worth asking once, because each exercises a wall:
   *created*. A key added after the first deploy needs Kong recreated, not restarted.
 - Semantic search reports it is off, or new content takes five minutes to become findable →
   `EMBEDDING_URL` and `EMBEDDING_KEY` are empty. They are on purpose; set them.
+- `skillhub_overview` → `index.meaning_search` is `error` → `last_error` names the object
+  and the endpoint's answer. A wrong chunk size: set `EMBEDDING_MAX_CHARS`. A dimension the
+  table cannot take because it holds vectors: `truncate platform.embeddings;` and re-run.
 - HTTP 403 `error code: 1010` → the edge rejected your User-Agent before the gateway saw the
   request. Send one.
 - An agent reports fewer tools than `tools/list` returns, or an old parameter set → it is

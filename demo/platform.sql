@@ -398,50 +398,8 @@ end $$;
 -- Filters on ownership: a private note or document belongs to its owner alone. The
 -- third argument is the agent the gateway verified; null means public only, so a
 -- caller that forgets to pass an identity sees less and never more.
-create or replace function platform.search(phrase text, max_hits int default 10, agent text default null)
-returns table (source text, id text, title text, excerpt text, rank real)
-language sql stable as $$
-  with q as (select websearch_to_tsquery('swedish', replace(trim(phrase), ' ', ' OR ')) as tq, phrase as raw)
-  select 'skill', s.slug, s.name,
-         left(coalesce(s.description,''), 180),
-         ts_rank(to_tsvector('swedish', coalesce(s.name,'')||' '||coalesce(s.description,'')||' '||coalesce(s.skill_md,'')), q.tq)
-  from public.skill_library s, q
-  where s.status <> 'deprecated'
-    and (s.visibility = 'public' or s.author_name = search.agent)
-    and (to_tsvector('swedish', coalesce(s.name,'')||' '||coalesce(s.description,'')||' '||coalesce(s.skill_md,'')) @@ q.tq
-         or s.slug ilike '%'||q.raw||'%')
-  union all
-  select 'note', n.id::text, n.title,
-         left(coalesce(n.content,''), 180),
-         ts_rank(to_tsvector('swedish', coalesce(n.title,'')||' '||coalesce(n.content,'')), q.tq)
-  from public.notes n, q
-  where (n.visibility = 'public' or n.owner = search.agent)
-    and to_tsvector('swedish', coalesce(n.title,'')||' '||coalesce(n.content,'')) @@ q.tq
-  union all
-  select 'table', c.relname, c.relname, left(coalesce(obj_description(c.oid),''), 180), 0.1::real
-  from pg_class c join pg_namespace n on n.oid=c.relnamespace, q
-  where n.nspname='public' and c.relkind in ('r','v')
-    and (c.relname ilike '%'||q.raw||'%' or coalesce(obj_description(c.oid),'') ilike '%'||q.raw||'%')
-  union all
-  -- Column comments. Measured 2026-09-12: the rule that a column carries sentinel values
-  -- lived in its comment, search covered only the TABLE comment, and an agent that searched
-  -- correctly found nothing and answered a total thirty-eight times too high. A column
-  -- comment is documentation for a person reading the schema; it only becomes a channel an
-  -- agent passes through if search reaches it. Ranked just above a table hit, because a
-  -- column comment says how to read the data rather than merely that it exists.
-  select 'column', c.relname||'.'||a.attname, c.relname||'.'||a.attname,
-         left(col_description(c.oid, a.attnum), 180), 0.2::real
-  from pg_class c
-  join pg_namespace n on n.oid=c.relnamespace
-  join pg_attribute a on a.attrelid=c.oid and a.attnum > 0 and not a.attisdropped, q
-  where n.nspname='public' and c.relkind in ('r','v')
-    and col_description(c.oid, a.attnum) is not null
-    and (col_description(c.oid, a.attnum) ilike '%'||q.raw||'%'
-         or to_tsvector('swedish', col_description(c.oid, a.attnum)) @@ q.tq)
-  order by 5 desc, 3
-  limit max_hits;
-$$;
-comment on function platform.search(text,int,text) is 'Keyword search over skills, notes and table descriptions. The third argument is the verified agent; without it only public content is returned. Run it before you create anything -- and before you answer a question from this data.';
+-- platform.search() is defined in platform_lifecycle.sql: it reads platform.v_current_skills and
+-- honours the retire columns. An older copy lived here and won whenever a later file failed.
 
 create index if not exists skill_library_fts_idx on public.skill_library
   using gin (to_tsvector('swedish', coalesce(name,'')||' '||coalesce(description,'')||' '||coalesce(skill_md,'')));
@@ -463,20 +421,29 @@ create table if not exists platform.embeddings (
   created_at   timestamptz not null default now(),
   primary key (source, id, model)
 );
-comment on table platform.embeddings is 'One embedding per object and model. Filled by the embedding job. text_hash decides whether it is out of date.';
+-- One vector per CHUNK since 2026-09-16, not per object. A 14,000-character skill was one
+-- vector: only what fit the model's context was embedded, and an embedder built for RAG
+-- (512-2048 tokens) refused it outright. Chunks are cut on the object's own headings, each
+-- prefixed with its title; similarity search returns the object once, at its best chunk,
+-- and names the section (head) it matched in.
+alter table platform.embeddings add column if not exists chunk int not null default 0;
+alter table platform.embeddings add column if not exists head text;
+do $pk$
+begin
+  if not exists (select 1 from pg_constraint c
+                  where c.conrelid = 'platform.embeddings'::regclass and c.contype = 'p'
+                    and array_length(c.conkey, 1) = 4) then
+    alter table platform.embeddings drop constraint if exists embeddings_pkey;
+    alter table platform.embeddings add primary key (source, id, model, chunk);
+  end if;
+end $pk$;
+comment on table platform.embeddings is 'One embedding per chunk of an object and model. Filled by the embedding job. text_hash (of the whole object) decides whether it is out of date; head is the first line of the chunk, so a hit can say which section matched.';
 create index if not exists embeddings_vector_idx on platform.embeddings
   using hnsw (vector vector_cosine_ops);
 
-create or replace function platform.similar(query_vector vector(1536), model_name text, max_hits int default 5)
-returns table (source text, id text, distance real)
-language sql stable as $$
-  select e.source, e.id, (e.vector <=> query_vector)::real
-  from platform.embeddings e
-  where e.model = model_name
-  order by e.vector <=> query_vector
-  limit max_hits;
-$$;
-comment on function platform.similar(vector,text,int) is 'Semantically nearest objects. Pass a vector from the SAME model the rows were stored with.';
+-- platform.similar() is built by platform.rebuild_similar() in platform_vector.sql, because its
+-- signature carries the dimension. It used to be defined here too, at vector(1536), and on the
+-- second seed run the two definitions collided (2026-09-16).
 
 -- What has no embedding yet, so the job knows what is left.
 create or replace view platform.v_not_indexed as
@@ -920,8 +887,13 @@ grant select on all tables in schema platform to anon, authenticated, service_ro
 -- ---------------------------------------------------------------------------
 -- 13) The rule the agents actually look at: into the conventions skill.
 -- ---------------------------------------------------------------------------
+-- Strip what this and the later files appended last time, from the placement rule to the
+-- end, then append afresh. Until 2026-09-16 the pattern named a heading that did not exist
+-- and carried the 'n' flag, under which '.' stops at a newline -- so nothing was stripped
+-- and the skill grew by four sections on every boot: 201,433 characters on dev after
+-- sixteen boots, found when the chunker produced sixteen chunks headed "## Overview".
 update public.skill_library
-   set skill_md = regexp_replace(skill_md, E'\n## New tables.*$', '', 'n')
+   set skill_md = regexp_replace(skill_md, E'\nPLACEMENT RULE -- run platform\\.search\\(\\) first.*$', '')
                   || E'\n' || platform.placement_rule() || E'\n\n'
                   || E'## Overview\n\n'
                   || E'The `platform` schema is readable by every agent and answers "what is here":\n'

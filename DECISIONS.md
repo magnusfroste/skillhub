@@ -489,6 +489,37 @@ retracted it in the next version after reading the table again. Both stand in th
 store now answers *how many tickets are closed* correctly only for an agent that reads the
 comment on `status`, which is the test in VERIFY §6 with this data.
 
+## 21. The index configures itself and embeds in chunks
+
+The client's embedder is a vLLM at `--max-model-len 2048`, tuned for a RAG tool that feeds
+it 512-token pieces. The store fed it whole objects: one vector per skill, note or
+document. A 14,000-character skill was refused outright — not truncated, refused, and its
+seven slice-mates with it, every five minutes. The workaround was a character cap, set by
+hand, which embedded the opening of a long skill and lost the rest. Four variables had to
+agree with each other and with the model (`URL`, `KEY`, `MODEL`, `DIM`), and the dimension
+locked itself on the first row.
+
+Since 2026-09-16 the indexer asks. On its first run it embeds one word and reads the
+dimension off the answer; while the table is empty it sets the vector column to it. It asks
+the server how much one input may carry — TEI answers on `/info`, vLLM on `/v1/models`; OpenAI
+answers neither and gets sizes tried from 24,000 characters down. What it found is written
+to `platform.embedder` and shown by `skillhub_overview` under `index`, with the result of
+every run — so "my colleague cannot find what I wrote" has a place to look. Three variables
+remain.
+
+Objects are cut on their own headings into chunks of that size, each carrying the title,
+saved together or not at all. Similarity returns an object once, at its best chunk, and
+names the section. Measured on dev with a 3,000-character budget: two skills became nine
+chunks, and *"what to do with a csv export when the table already exists"* found the loading
+skill at its first section. A RAG embedder at 512 tokens is now enough.
+
+The chunker found something else on its first run: the conventions skill on dev was 201,433
+characters, holding "## Overview" sixteen times. Three seed statements strip their own
+section and re-append it, and all three used the regex flag under which `.` stops at a
+newline — so the strip removed one heading line and the skill grew by four sections on
+every boot, for two weeks, on every instance. Nothing read it in full, so nothing noticed.
+The empty-database test now seeds twice and counts each section once.
+
 ---
 
 ## What this does not do yet

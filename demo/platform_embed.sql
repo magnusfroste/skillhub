@@ -6,38 +6,90 @@
 -- alternative, putting the endpoint in every agent's prompt, produces an index that
 -- reflects who was diligent rather than what exists, and spreads the key to every laptop.
 
--- What is waiting to be embedded, with the text and its hash.
+-- Cutting an object into chunks the embedder accepts. On the object's own headings first;
+-- a section over the budget on blank lines; a paragraph over the budget hard. Consecutive
+-- pieces are packed back together up to the budget, so a short skill stays one chunk and a
+-- long one becomes a handful, each carrying the title so the vector knows what it is part of.
+-- head is the first line of the chunk: what a hit reports as "found in section ...".
+create or replace function platform.chunk_text(title text, body text, max_chars int default 6000)
+returns table (chunk int, head text, content text)
+language plpgsql immutable as $$
+declare
+  t text := coalesce(title, '');
+  budget int := greatest(coalesce(max_chars, 6000) - length(t) - 1, 200);
+  units text[] := '{}';
+  sec text; para text; piece text; u text;
+  cur text := ''; n int := 0;
+begin
+  for sec in select x from regexp_split_to_table(coalesce(body, ''), E'(?n)(?=^#{1,6} )') x loop
+    if btrim(sec) = '' then continue; end if;
+    if length(sec) <= budget then
+      units := units || sec;
+    else
+      for para in select x from regexp_split_to_table(sec, E'\n[ \t]*\n') x loop
+        if btrim(para) = '' then continue; end if;
+        if length(para) <= budget then
+          units := units || para;
+        else
+          piece := para;
+          while length(piece) > 0 loop
+            units := units || substr(piece, 1, budget);
+            piece := substr(piece, budget + 1);
+          end loop;
+        end if;
+      end loop;
+    end if;
+  end loop;
+  if coalesce(array_length(units, 1), 0) = 0 then
+    chunk := 0; head := left(t, 80); content := t; return next; return;
+  end if;
+  foreach u in array units loop
+    if cur <> '' and length(cur) + 2 + length(u) > budget then
+      chunk := n; head := left(split_part(btrim(cur), E'\n', 1), 80); content := t || E'\n' || cur;
+      return next; n := n + 1; cur := '';
+    end if;
+    cur := case when cur = '' then u else cur || E'\n\n' || u end;
+  end loop;
+  if cur <> '' then
+    chunk := n; head := left(split_part(btrim(cur), E'\n', 1), 80); content := t || E'\n' || cur;
+    return next;
+  end if;
+end $$;
+comment on function platform.chunk_text(text, text, int) is 'Cuts a text on its headings into chunks of at most max_chars, each prefixed with the title. Short texts stay one chunk.';
+
+-- What is waiting to be embedded: every chunk of every object whose text changed, with the
+-- object's hash. max_chars is what the indexer found the endpoint accepts.
 -- Private rows are absent by design: nothing private is ever indexed, so a private note
 -- cannot be found by meaning -- not by another agent and not by its owner.
-create or replace function public.embed_candidates(max_rows int default 20) returns jsonb
+drop view if exists platform.v_index_status;
+drop function if exists public.embed_candidates(int);
+create or replace function public.embed_candidates(max_rows int default 20, max_chars int default 6000) returns jsonb
 language plpgsql stable security definer set search_path = public, platform as $$
 declare j jsonb;
 begin
-  select coalesce(jsonb_agg(x), '[]'::jsonb) into j from (
-    select 'skill' as source, s.slug as id,
-           left(coalesce(s.name,'')||E'\n'||coalesce(s.description,'')||E'\n'||coalesce(s.skill_md,''), 8000) as text,
+  with objects as (
+    select 'skill' as source, s.slug as id, coalesce(s.name,'') as title,
+           left(coalesce(s.description,'')||E'\n\n'||coalesce(s.skill_md,''), 60000) as body,
            md5(coalesce(s.name,'')||coalesce(s.description,'')||coalesce(s.skill_md,'')) as text_hash
     from platform.v_current_skills s
     where not exists (select 1 from platform.embeddings e
-                      where e.source='skill' and e.id=s.slug
+                      where e.source='skill' and e.id=s.slug and e.chunk = 0
                         and e.text_hash = md5(coalesce(s.name,'')||coalesce(s.description,'')||coalesce(s.skill_md,'')))
     union all
-    select 'note', n.id::text,
-           left(coalesce(n.title,'')||E'\n'||coalesce(n.content,''), 8000),
+    select 'note', n.id::text, coalesce(n.title,''), left(coalesce(n.content,''), 60000),
            md5(coalesce(n.title,'')||coalesce(n.content,''))
     from public.notes n
     where n.visibility = 'public' and n.retired_at is null
       and not exists (select 1 from platform.embeddings e
-                      where e.source='note' and e.id=n.id::text
+                      where e.source='note' and e.id=n.id::text and e.chunk = 0
                         and e.text_hash = md5(coalesce(n.title,'')||coalesce(n.content,'')))
     union all
-    select 'document', d.id::text,
-           left(coalesce(d.filename,'')||E'\n'||coalesce(d.description,''), 8000),
+    select 'document', d.id::text, coalesce(d.filename,''), coalesce(d.description,''),
            md5(coalesce(d.filename,'')||coalesce(d.description,''))
     from public.documents d
     where d.visibility = 'public' and d.retired_at is null
       and not exists (select 1 from platform.embeddings e
-                      where e.source='document' and e.id=d.id::text
+                      where e.source='document' and e.id=d.id::text and e.chunk = 0
                         and e.text_hash = md5(coalesce(d.filename,'')||coalesce(d.description,'')))
     union all
     -- Schema comments. Measured 2026-09-12: the rule that a column carries sentinel values
@@ -46,9 +98,7 @@ begin
     -- cannot cross a language; meaning can. So the comments are indexed too, and the answer
     -- to "how must this data be read" stops depending on the reader guessing the right word
     -- in the right language.
-    select 'schema', sc.obj_name,
-           left(sc.obj_name || E'\n' || sc.cmt, 8000),
-           md5(sc.cmt)
+    select 'schema', sc.obj_name, sc.obj_name, sc.cmt, md5(sc.cmt)
     from (
       select c.relname::text as obj_name, obj_description(c.oid) as cmt
       from pg_class c join pg_namespace n on n.oid=c.relnamespace
@@ -60,12 +110,15 @@ begin
       where n.nspname='public' and c.relkind in ('r','v') and col_description(c.oid, a.attnum) is not null
     ) sc
     where not exists (select 1 from platform.embeddings e
-                      where e.source='schema' and e.id = sc.obj_name
+                      where e.source='schema' and e.id = sc.obj_name and e.chunk = 0
                         and e.text_hash = md5(sc.cmt))
-    limit max_rows) x;
+    limit max_rows)
+  select coalesce(jsonb_agg(jsonb_build_object('source', o.source, 'id', o.id, 'chunk', c.chunk,
+                    'head', c.head, 'text', c.content, 'text_hash', o.text_hash)), '[]'::jsonb) into j
+  from objects o cross join lateral platform.chunk_text(o.title, o.body, max_chars) c;
   return j;
 end $$;
-comment on function public.embed_candidates(int) is 'Objects without a current embedding. text_hash means changed text is embedded again. A document is indexed on its filename and description only -- the contents are not in the store.';
+comment on function public.embed_candidates(int, int) is 'Chunks of objects without a current embedding, max_rows OBJECTS at a time, cut to max_chars. text_hash is the whole object''s, so changed text is embedded again. A document is indexed on its filename and description only -- the contents are not in the store.';
 
 -- Save a vector. jsonb in, vector out, so the edge function never has to know pgvector's
 -- wire format. The parameters are prefixed p_ because "source" alone is ambiguous between
@@ -89,15 +142,114 @@ begin
 end $$;
 comment on function public.embed_save(text,text,text,jsonb,text) is 'Writes one embedding. The same object and model is overwritten; different models live side by side.';
 
--- jsonb_array_length, not count(*): embed_candidates returns ONE row holding an array, so
--- count(*) was always 1 and the view claimed something was waiting even when the queue was
--- empty. The cast to bigint is needed because a view's column type cannot be changed by
--- CREATE OR REPLACE.
+-- All chunks of one object in one transaction: what was there for the object goes, what the
+-- indexer just computed comes in. p_vectors is a JSON array of arrays, p_heads the chunk
+-- heads in the same order. Nothing is saved for an object until every chunk embedded.
+create or replace function public.embed_save_chunks(p_source text, p_id text, p_model text, p_vectors jsonb, p_heads jsonb, p_text_hash text)
+returns jsonb language plpgsql security definer set search_path = public, platform as $$
+declare k int; n int := jsonb_array_length(p_vectors);
+begin
+  if n = 0 then raise exception 'No vectors to save for %/%.', p_source, p_id; end if;
+  delete from platform.embeddings where source = p_source and id = p_id and model = p_model;
+  for k in 0 .. n - 1 loop
+    insert into platform.embeddings (source, id, model, chunk, head, vector, text_hash)
+    values (p_source, p_id, p_model, k, left(p_heads ->> k, 80), (p_vectors -> k #>> '{}')::vector, p_text_hash);
+  end loop;
+  return jsonb_build_object('source', p_source, 'id', p_id, 'model', p_model, 'chunks', n);
+end $$;
+comment on function public.embed_save_chunks(text,text,text,jsonb,jsonb,text) is 'Replaces every chunk of one object and model with the vectors given, in one transaction.';
+
+-- ---------------------------------------------------------------------------
+-- The embedder, as the store knows it. One row. The indexer probes the endpoint -- which
+-- dimension the model returns, how much text it accepts -- and writes what it found here,
+-- with the result of each run. skillhub_overview shows it, so "meaning search is off" or
+-- "the last run failed on note X" is visible to every agent instead of being a silent cron.
+-- ---------------------------------------------------------------------------
+create table if not exists platform.embedder (
+  id            int primary key default 1 check (id = 1),
+  url           text,
+  model         text,
+  dimension     int,
+  max_tokens    int,
+  max_chars     int,
+  limit_source  text,            -- 'tei /info' | 'vllm /v1/models' | 'probe' | 'env'
+  probed_at     timestamptz,
+  status        text,            -- 'off' | 'ok' | 'error'
+  last_run      timestamptz,
+  last_embedded int,
+  last_failed   int,
+  last_error    text
+);
+comment on table platform.embedder is 'What the indexer found out about the embedding endpoint, and how its last run went. Written by the indexer; read by skillhub_overview.';
+
+create or replace function public.embedder_save(p jsonb) returns jsonb
+language plpgsql security definer set search_path = public, platform as $$
+begin
+  insert into platform.embedder as x (id, url, model, dimension, max_tokens, max_chars, limit_source, probed_at,
+                                      status, last_run, last_embedded, last_failed, last_error)
+  values (1, p->>'url', p->>'model', (p->>'dimension')::int, (p->>'max_tokens')::int, (p->>'max_chars')::int,
+          p->>'limit_source', (p->>'probed_at')::timestamptz, p->>'status', (p->>'last_run')::timestamptz,
+          (p->>'last_embedded')::int, (p->>'last_failed')::int, p->>'last_error')
+  on conflict (id) do update set
+    url = coalesce(excluded.url, x.url), model = coalesce(excluded.model, x.model),
+    dimension = coalesce(excluded.dimension, x.dimension), max_tokens = coalesce(excluded.max_tokens, x.max_tokens),
+    max_chars = coalesce(excluded.max_chars, x.max_chars), limit_source = coalesce(excluded.limit_source, x.limit_source),
+    probed_at = coalesce(excluded.probed_at, x.probed_at), status = coalesce(excluded.status, x.status),
+    last_run = coalesce(excluded.last_run, x.last_run), last_embedded = coalesce(excluded.last_embedded, x.last_embedded),
+    last_failed = coalesce(excluded.last_failed, x.last_failed),
+    last_error = case when p ? 'last_error' then p->>'last_error' else x.last_error end;
+  return (select to_jsonb(e) from platform.embedder e where id = 1);
+end $$;
+revoke execute on function public.embedder_save(jsonb) from public, anon, authenticated;
+grant execute on function public.embedder_save(jsonb) to service_role;
+
+-- The row as it is, for the indexer's own use (settings it wrote last time).
+create or replace function public.embedder_get() returns jsonb
+language sql stable security definer set search_path = public, platform as $$
+  select coalesce((select to_jsonb(e) from platform.embedder e where id = 1), '{}'::jsonb);
+$$;
+revoke execute on function public.embedder_get() from public, anon, authenticated;
+grant execute on function public.embedder_get() to service_role;
+
+create or replace function public.embed_set_dim(wanted int) returns text
+language sql security definer set search_path = platform, public as $$
+  select platform.set_vector_dim(wanted);
+$$;
+revoke execute on function public.embed_set_dim(int) from public, anon, authenticated;
+grant execute on function public.embed_set_dim(int) to service_role;
+
+-- What every agent sees in skillhub_overview. Cheap: one row plus two counts.
+create or replace function public.embedder_status() returns jsonb
+language sql stable security definer set search_path = public, platform as $$
+  select jsonb_build_object(
+    'meaning_search', case when e.status = 'ok' then 'on' when e.status = 'error' then 'error' else 'off' end,
+    'model', e.model, 'dimension', e.dimension,
+    'table_dimension', (select atttypmod from pg_attribute where attrelid = 'platform.embeddings'::regclass and attname = 'vector'),
+    'max_chars_per_chunk', e.max_chars, 'limit_from', e.limit_source,
+    'objects', (select count(distinct (source, id)) from platform.embeddings),
+    'chunks', (select count(*) from platform.embeddings),
+    'waiting', jsonb_array_length(public.embed_candidates(1000, 100000)),
+    'last_run', e.last_run::timestamp(0), 'last_embedded', e.last_embedded, 'last_failed', e.last_failed,
+    'last_error', e.last_error,
+    'note', case when e.status is null or e.status = 'off'
+                 then 'EMBEDDING_URL is not set: keyword search works, search by meaning does not, and new content is found only by its words. Set EMBEDDING_URL, EMBEDDING_KEY and EMBEDDING_MODEL; the indexer works out the rest.'
+                 when e.status = 'error' then 'The indexer''s last run failed; see last_error. Keyword search is unaffected.'
+                 else null end)
+  from (select * from platform.embedder where id = 1
+        union all select 1, null,null,null,null,null,null,null,'off',null,null,null,null
+        limit 1) e;
+$$;
+comment on function public.embedder_status() is 'Whether search by meaning is on, which model, and how the last indexing run went. Shown in skillhub_overview.';
+
+-- Per model: objects, chunks, and how many objects are waiting (one row holding an array,
+-- hence jsonb_array_length; the cast because a view's column type cannot change in place).
 create or replace view platform.v_index_status as
-select e.model, count(*) as embedded, max(e.created_at)::timestamp(0) as last_run,
-       jsonb_array_length(public.embed_candidates(1000))::bigint as waiting
+select e.model, count(distinct (e.source, e.id)) as embedded, count(*) as chunks,
+       max(e.created_at)::timestamp(0) as last_run,
+       (select count(distinct (c->>'source', c->>'id'))
+          from jsonb_array_elements(public.embed_candidates(1000, 100000)) c)::bigint as waiting
 from platform.embeddings e group by e.model;
-comment on view platform.v_index_status is 'How many objects are embedded per model, and how many are waiting.';
+comment on view platform.v_index_status is 'How many objects and chunks are embedded per model, and how many objects are waiting.';
 
 grant execute on all functions in schema public to service_role, postgres;
 

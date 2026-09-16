@@ -102,11 +102,18 @@ Everything an agent reads at the start of a session comes from `skillhub_overvie
 
 `skillhub_search` is keywords over skills, notes, documents and table **and column**
 comments; when nothing matches it falls back to meaning by itself. `skillhub_similar` is
-meaning. Objects are embedded whole — one vector per skill, note or document, newest version
-per slug — within about a second of being written (`platform.nudge_embed`), with a five-minute
-cron as the net. Tables are not embedded; their comments are, because that is where "how this
-data has to be read" is written down. A different embedding dimension: empty
-`platform.embeddings`, run `demo/platform_vector.sql`, set `EMBEDDING_DIM`.
+meaning. Objects are embedded in chunks cut on their own headings, sized to what the embedder
+accepts — newest version per slug — within about a second of being written
+(`platform.nudge_embed`), with a five-minute cron as the net; a hit on a long object names the
+section it matched in. Tables are not embedded; their comments are, because that is where
+"how this data has to be read" is written down.
+
+The indexer configures itself. Give it `EMBEDDING_URL`, `EMBEDDING_KEY` and `EMBEDDING_MODEL`
+and it asks the endpoint what it is: the dimension the model returns becomes the vector column
+(while the table is empty), and how much text one input may carry comes from TEI's `/info`,
+vLLM's `/v1/models`, or by trying. An embedder built for RAG at 512 tokens works; so does one
+at 8k. What it found and how the last run went is `skillhub_overview` → `index`. To switch
+models: `truncate platform.embeddings;` — the next run re-probes and rebuilds.
 
 ## Traps
 
@@ -115,8 +122,9 @@ data has to be read" is written down. A different embedding dimension: empty
 - **`EMBEDDING_*` empty** — keyword search works, meaning does not, new content is findable on
   the cron instead of in a second. Nothing fails loudly.
 - **A key added after the first deploy answers 401** until Kong is recreated.
-- **A short-context embedder** (vLLM `--max-model-len 2048`) refuses long inputs: set
-  `EMBEDDING_MAX_CHARS` or raise the limit. The indexer isolates a failing input and reports it.
+- **A short-context embedder is fine** — the indexer asks or probes, then chunks to fit. If
+  it guessed wrong, `overview` → `index.last_error` says which object and why; set
+  `EMBEDDING_MAX_CHARS` to force the chunk size.
 - **Deploying without a Domain or `Create .env`** in Easypanel yields
   `top-level object must be a mapping` — the generated override file is empty.
 - **`POSTGRES_PASSWORD` is burned into the database roles at first init.** Changing it in

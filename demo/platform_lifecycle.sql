@@ -190,6 +190,7 @@ language sql stable as $$
   order by 5 desc, 3
   limit max_hits;
 $$;
+comment on function platform.search(text,int,text) is 'Keyword search over skills, notes and table descriptions. The third argument is the verified agent; without it only public content is returned. Run it before you create anything -- and before you answer a question from this data.';
 
 create or replace view platform.v_documents as
 select d.filename, d.bucket, coalesce(d.path,'(not uploaded)') as path,
@@ -319,7 +320,7 @@ grant execute on all functions in schema platform to anon, authenticated, servic
 -- 5) Into the conventions skill, or no agent knows any of this exists.
 -- ---------------------------------------------------------------------------
 update public.skill_library
-   set skill_md = regexp_replace(skill_md, E'\n## Lifecycle and files.*$', '', 'n')
+   set skill_md = regexp_replace(skill_md, E'\n## Lifecycle and files.*$', '')  -- no 'n' flag: '.' must cross newlines (2026-09-16)
                   || E'\n## Lifecycle and files\n\n'
                   || E'Never delete a skill. If it turned out wrong or went out of date:\n'
                   || E'  select public.retire_skill(''slug'', ''why'', ''replacement-slug'');\n'

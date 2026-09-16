@@ -120,7 +120,7 @@ const TOOLS: Tool[] = [
   {
     name: "skillhub_similar",
     description:
-      "Search by MEANING when keyword search finds nothing but the subject should exist. Embeds your question and compares it with everything indexed. Returns which objects are relevant; read them with skillhub_read.",
+      "Search by MEANING when keyword search finds nothing but the subject should exist. Embeds your question and compares it with everything indexed. Returns which objects are relevant; read them with skillhub_read. A hit on a long object names the section it matched in (matched), so you know where to start reading; skillhub_read still gives the whole object.",
     inputSchema: obj(
       { query: str("Free text; a sentence works better than a single word"), max_hits: int("Maximum hits", 5) },
       ["query"],

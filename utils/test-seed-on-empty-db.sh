@@ -24,7 +24,8 @@ IMAGE="${IMAGE:-supabase/postgres:17.6.1.136}"
 NAME="${NAME:-seedtest-$$}"
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 
-cleanup() { docker rm -f "$NAME" >/dev/null 2>&1 || true; }
+# KEEP=1 leaves the container running for a look with: docker exec -it $NAME psql -U postgres
+cleanup() { [ -n "${KEEP:-}" ] && { echo "   kept: $NAME"; return; }; docker rm -f "$NAME" >/dev/null 2>&1 || true; }
 trap cleanup EXIT INT TERM
 cleanup
 
@@ -79,6 +80,8 @@ check "overview answers" \
   "select (public.skillhub_overview() is not null)::text" "true"
 check "the conventions skill is there, once" \
   "select count(*) from public.skill_library where slug='store-conventions'" "1"
+check "and its appended sections appear once after two seed runs" \
+  "select (length(skill_md)-length(replace(skill_md,'## Overview','')))/11 || ':' || (length(skill_md)-length(replace(skill_md,'## House standards','')))/18 || ':' || (length(skill_md)-length(replace(skill_md,'## Lifecycle and files','')))/22 || ':' || (length(skill_md) < 30000)::text from public.skill_library where slug='store-conventions'" "1:1:1:true"
 check "soft delete columns exist on notes" \
   "select count(*) from information_schema.columns where table_schema='public' and table_name='notes' and column_name in ('retired_at','retired_by','retired_reason')" "3"
 check "a write through the tool tier works" \
@@ -118,6 +121,26 @@ check "and it landed in the shared bucket" \
   "select bucket from public.documents where sha256='0000seed'" "shared"
 check "the loading house standard is at 1.1.0 and the agent path" \
   "select version || ':' || (skill_md like '%skillhub_upload_url%')::text from platform.v_current_skills where slug='load-from-source-system'" "1.1.0:true"
+# Chunking (2026-09-16): a long text is cut on its headings, each chunk carries the title,
+# the object is saved as several vectors and comes back from similarity ONCE, naming the
+# section that matched. An embedder built for RAG (512-2048 tokens) needs exactly this.
+check "a long text is chunked on its headings, title on every chunk" \
+  "select count(*)::text || ':' || bool_and(content like 'Title%')::text || ':' || max(head) from platform.chunk_text('Title', '## One'||E'\n'||repeat('a ',900)||E'\n\n## Two'||E'\n'||repeat('b ',900)||E'\n\n## Three'||E'\n'||repeat('c ',900), 2500)" "3:true:## Two"
+check "a short text stays one chunk" \
+  "select count(*) from platform.chunk_text('Title', 'A short body.', 2500)" "1"
+check "the candidates carry chunks when the budget is small" \
+  "select count(*) > 1 from jsonb_array_elements(public.embed_candidates(1000, 600)) c where c->>'source'='skill' and c->>'id'='store-conventions'" "t"
+q "select public.embed_save_chunks('skill','seed-two-versions','probe', jsonb_build_array(to_jsonb(array_fill(0::real,array[1536])), to_jsonb(array_fill(0::real,array[1536]))), '[\"## A\",\"## B\"]'::jsonb, 'x')" >/dev/null
+check "two chunks saved, and similarity returns the object once with its section" \
+  "select (select count(*) from platform.embeddings where id='seed-two-versions')::text || ':' || (select count(*) from jsonb_array_elements(public.skillhub_similar(to_jsonb(array_fill(0::real,array[1536])),'probe',10)) h where h->>'id'='seed-two-versions')::text || ':' || (select h->'matched'->>'of' from jsonb_array_elements(public.skillhub_similar(to_jsonb(array_fill(0::real,array[1536])),'probe',10)) h where h->>'id'='seed-two-versions')" "2:1:2"
+check "the overview shows the index status" \
+  "select (public.skillhub_overview()->'index'->>'meaning_search') || ':' || (public.skillhub_overview()->'index'->>'chunks')" "off:2"
+q "truncate platform.embeddings" >/dev/null
+check "the dimension can be changed by function while the table is empty" \
+  "select left(platform.set_vector_dim(1024), 41)" "The vector store is now vector(1024) with"
+check "and similar() follows the dimension" \
+  "select count(*) from platform.similar(array_fill(0::real,array[1024])::vector, 'probe', 3)" "0"
+q "select platform.set_vector_dim(1536)" >/dev/null
 check "retiring the note works too" \
   "select (public.skillhub_retire('agent_01','note',(select id::text from public.notes where title='Seed test'),'seed test cleanup') ? 'retired_by')::text" "true"
 

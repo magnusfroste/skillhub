@@ -188,7 +188,7 @@ grant execute on all functions in schema platform to anon, authenticated, servic
 -- 4) The conventions skill points at the house standards, or nobody finds them.
 -- ---------------------------------------------------------------------------
 update public.skill_library
-   set skill_md = regexp_replace(skill_md, E'\n## House standards.*$', '', 'n')
+   set skill_md = regexp_replace(skill_md, E'\n## House standards.*$', '')  -- no 'n' flag: '.' must cross newlines (2026-09-16)
                   || E'\n## House standards\n\n'
                   || E'Skills tagged `house-standard` describe how a particular kind of work is done here.\n'
                   || E'Find them with:\n'

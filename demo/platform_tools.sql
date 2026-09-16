@@ -39,7 +39,10 @@ language sql stable security definer set search_path = public, platform as $$
                   'system', source_system, 'rows', row_count, 'loaded', last_loaded)), '[]'::jsonb)
                 from platform.v_sources),
     'backlog', (select count(*) from platform.v_action_items),
-    'stale', (select count(*) from platform.v_going_stale));
+    'stale', (select count(*) from platform.v_going_stale),
+    -- Whether search by meaning is on, and how the last indexing run went. A silent cron
+    -- was the alternative, and its failure mode is "my colleague cannot find what I wrote".
+    'index', public.embedder_status());
 $$;
 
 -- Passes the verified agent through to platform.search so private rows stay private, and
@@ -138,14 +141,19 @@ returns jsonb language plpgsql stable security definer set search_path = public,
 declare v vector; j jsonb;
 begin
   v := (query_vector #>> '{}')::vector;
-  select coalesce(jsonb_agg(x), '[]'::jsonb) into j from (
-    select e.source as kind, e.id, round((1 - (e.vector <=> v))::numeric, 4) as similarity,
+  -- One row per object, at its best chunk. A long skill is several vectors since 2026-09-16;
+  -- without distinct on, one skill could fill every slot of the answer with its own sections.
+  select coalesce(jsonb_agg(x order by x.similarity desc), '[]'::jsonb) into j from (
+    select b.source as kind, b.id, b.similarity,
            case e.source
              when 'skill' then (select s.name from platform.v_current_skills s where s.slug = e.id)
              when 'note' then (select n.title from public.notes n where n.id::text = e.id)
              when 'document' then (select d.filename from public.documents d where d.id::text = e.id)
              when 'schema' then e.id
            end as title,
+           -- Which section matched, when the object has more than one chunk. That is where
+           -- to start reading; skillhub_read still returns the whole object.
+           case when b.chunks > 1 then jsonb_build_object('chunk', b.chunk + 1, 'of', b.chunks, 'section', b.head) end as matched,
            -- For a schema hit the comment IS the answer, so it travels with the result. A
            -- pointer would send the agent looking for a reader that does not exist:
            -- skillhub_read handles skill, note, document and table, not a single column.
@@ -158,9 +166,16 @@ begin
                   else obj_description(('public.'||e.id)::regclass)
              end
            end as comment
-    from platform.embeddings e
-    where e.model = skillhub_similar.model
-    order by e.vector <=> v
+    from (
+      select distinct on (e.source, e.id)
+             e.source, e.id, e.chunk, e.head,
+             round((1 - (e.vector <=> v))::numeric, 4) as similarity,
+             count(*) over (partition by e.source, e.id) as chunks
+      from platform.embeddings e
+      where e.model = skillhub_similar.model
+      order by e.source, e.id, e.vector <=> v) b
+    join platform.embeddings e on e.source = b.source and e.id = b.id and e.chunk = b.chunk and e.model = skillhub_similar.model
+    order by b.similarity desc
     limit max_hits) x;
   return j;
 end $$;

@@ -96,7 +96,9 @@ note — that is an administrator, one person's stated responsibility.
 | Hand over a file of rows | `upload_url` (signed Storage URL, no key needed; the bytes never pass through the model) → `load_file` into an existing table on a natural key, or `request_structure` with `document_id`, `natural_key` and your `observations` — the caretaker builds the table with those as column comments and loads the file: `select platform.load_registered_file(<request_id>);` |
 
 Everything an agent reads at the start of a session comes from `skillhub_overview` and
-`skillhub_rules`, so a rule can be changed centrally without touching a device.
+`skillhub_rules`, so a rule can be changed centrally without touching a device. `overview`
+also tells an agent what became of the structure requests it filed — open, or the
+caretaker's answer — and whether search by meaning is on (`index`).
 
 ## Search
 

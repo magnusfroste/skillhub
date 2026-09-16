@@ -150,6 +150,18 @@ q "select public.embed_save_chunks('note','reindex-probe','probe', jsonb_build_a
 q "select platform.reindex('switching to the private model for the demo', 'service_role')" >/dev/null
 check "a reindex with a reason empties the index and logs it" \
   "select (select count(*) from platform.embeddings)::text || ':' || (select count(*) from platform.events where table_name='platform.embeddings' and summary like '%switching to the private model%')::text" "0:1"
+# An agent could not see what became of its own structure request: on the demo 2026-09-16
+# agent_04 filed one, saw it still open, and concluded the delivery was done and waiting.
+# Write and read in separate statements -- skillhub_overview is STABLE and reads the
+# snapshot the statement began with, so a request created in the same SELECT is not there.
+q "select public.skillhub_request_structure('agent_01','A probe request written by the empty-database test to pin that an agent can see what became of it', to_jsonb(array['a','b']))" >/dev/null
+check "an agent sees its own request, and it is open" \
+  "select jsonb_array_length(public.skillhub_overview('agent_01')->'your_requests')::text || ':' || (public.skillhub_overview('agent_01')->'your_requests'->0->>'status')" "1:open"
+check "and another agent does not see it as theirs" \
+  "select jsonb_array_length(public.skillhub_overview('agent_02')->'your_requests')::text" "0"
+q "select platform.resolve_structure_request((select max(id) from platform.structure_requests), 'service_role', 'Loaded from the uploaded file instead; nothing for you to do.', null, true)" >/dev/null
+check "the caretaker's answer reaches the agent" \
+  "select (public.skillhub_overview('agent_01')->'your_requests'->0->>'status') || ':' || left(public.skillhub_overview('agent_01')->'your_requests'->0->>'answer', 24)" "declined:Loaded from the uploaded"
 check "retiring the note works too" \
   "select (public.skillhub_retire('agent_01','note',(select id::text from public.notes where title='Seed test'),'seed test cleanup') ? 'retired_by')::text" "true"
 

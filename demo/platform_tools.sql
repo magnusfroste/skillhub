@@ -21,7 +21,12 @@
 -- reaches every machine and can still be changed centrally afterwards. So it answers who
 -- else is here before it answers anything about tables: an agent that does not know it
 -- shares the store cannot reason about duplicating someone's work.
-create or replace function public.skillhub_overview() returns jsonb
+-- The caller is passed now (2026-09-16). Until then an agent could file a structure
+-- request and never learn what became of it: on the demo, agent_04 saw its own request
+-- still open, concluded the delivery was done and waiting, and stopped -- correctly, on
+-- the only information it had. The caretaker's answer reaches the agent here.
+drop function if exists public.skillhub_overview();
+create or replace function public.skillhub_overview(agent text default null) returns jsonb
 language sql stable security definer set search_path = public, platform as $$
   select jsonb_build_object(
     'read_this_first', jsonb_build_array(
@@ -40,6 +45,17 @@ language sql stable security definer set search_path = public, platform as $$
                 from platform.v_sources),
     'backlog', (select count(*) from platform.v_action_items),
     'stale', (select count(*) from platform.v_going_stale),
+    -- What became of what you asked for. Open means the caretaker has not answered yet;
+    -- done and declined both carry the answer, and declined usually means it already
+    -- exists somewhere -- read the sentence before asking again.
+    'your_requests', (select coalesce(jsonb_agg(jsonb_build_object(
+                        'id', r.id, 'asked', r.at::timestamp(0), 'purpose', left(r.purpose, 120),
+                        'status', r.status, 'table', r.table_name,
+                        'answer', r.resolution, 'answered_by', r.resolved_by) order by r.at desc), '[]'::jsonb)
+                      from platform.structure_requests r
+                      where skillhub_overview.agent is not null
+                        and r.requested_by = skillhub_overview.agent
+                        and (r.status = 'open' or r.resolved_at > now() - interval '30 days')),
     -- Whether search by meaning is on, and how the last indexing run went. A silent cron
     -- was the alternative, and its failure mode is "my colleague cannot find what I wrote".
     'index', public.embedder_status());

@@ -539,6 +539,25 @@ newline — so the strip removed one heading line and the skill grew by four sec
 every boot, for two weeks, on every instance. Nothing read it in full, so nothing noticed.
 The empty-database test now seeds twice and counts each section once.
 
+## 22. An agent sees what became of what it asked for
+
+A structure request is the one place an agent hands work to a person and waits. Until
+2026-09-16 the answer never came back: `platform.v_structure_requests` is the caretaker's
+queue, and nothing on the agent side read it. Measured the same day, twice, on the demo —
+agent_04 filed a request, saw it still open in the caretaker's queue, concluded the
+delivery was done and waiting, and stopped. Correctly, on the only information it had.
+Then it refused to fabricate the step it could not take, which is the behaviour you want
+and no consolation at all.
+
+`skillhub_overview` now carries `your_requests` for the calling agent: open ones, and
+anything answered in the last thirty days with the caretaker's own sentence. Declined
+usually means *it already exists somewhere* — the answer is worth reading before asking
+again. It costs one more field in the tool every agent runs first.
+
+The general shape, worth stating because it will happen again: **a queue with one reader is
+a wall, not a queue.** Anywhere the store asks an agent to wait, the answer has to reach
+the agent through a tool it already calls, not through a view someone else reads.
+
 ---
 
 ## What this does not do yet

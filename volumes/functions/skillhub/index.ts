@@ -81,9 +81,10 @@ const TOOLS: Tool[] = [
   {
     name: "skillhub_overview",
     description:
-      "Start here in a new session: the state of the shared store. Counts of tables and skills, active agents, every table with its comment and row count, where data came from and how fresh it is, and how much is waiting to be cleaned up.",
+      "Start here in a new session: the state of the shared store. Counts of tables and skills, active agents, every table with its comment and row count, where data came from and how fresh it is, and how much is waiting to be cleaned up. It also shows what became of the structure requests YOU filed -- open, or the caretaker's answer -- so you do not have to guess whether a delivery is still waiting.",
     inputSchema: obj({}),
     rpc: "skillhub_overview",
+    needsAgent: true,
   },
   {
     name: "skillhub_search",

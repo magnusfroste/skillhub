@@ -135,6 +135,30 @@ table built, one row per key, the observations as column comments, and the deliv
 the file's hash. A second `skillhub_load_file` of the same file into that table must report
 `inserted 0, updated N` — that is next month's export, and it needs nobody.
 
+## 5c. Changing the embedding model, in this order
+
+A model with a different dimension means a different vector column, and the order is not
+free: the same `EMBEDDING_*` variables are read by the indexer **and** by the query side of
+`skillhub_similar`. Point them at a 4,096-dimension model while the table still holds
+1,536-dimension vectors and every similarity query raises `different vector dimensions` —
+including the fallback `skillhub_search` makes when keywords miss. An empty table raises
+nothing: there is no row to compare against.
+
+So:
+
+```sql
+truncate platform.embeddings;      -- 1. first, while the old model is still configured
+```
+
+2. Set `EMBEDDING_URL`, `EMBEDDING_KEY` and `EMBEDDING_MODEL`, and deploy.
+3. Run the indexer once — `POST $URL/embed?batch=100&probe=1` with the service key — or wait
+   five minutes for the cron.
+4. `skillhub_overview` → `index`: the new model, its dimension, `waiting: 0`,
+   `last_truncated: 0`, `last_error: null`.
+
+Between 1 and 3 keyword search is unaffected and search by meaning finds nothing. The other
+order trades those few minutes for an error on every query.
+
 ## 6. Ask an agent something you know the answer to
 
 Scripts prove the mechanism. Only an agent proves the store is usable, and the useful test is
@@ -178,6 +202,9 @@ Two more worth asking once, because each exercises a wall:
   *created*. A key added after the first deploy needs Kong recreated, not restarted.
 - Semantic search reports it is off, or new content takes five minutes to become findable →
   `EMBEDDING_URL` and `EMBEDDING_KEY` are empty. They are on purpose; set them.
+- `index.last_truncated` is above zero → chunks were CUT at the model's input limit and that
+  content is indexed in part, silently. Set `EMBEDDING_MAX_CHARS` below `max_chars_per_chunk`
+  and run the indexer again.
 - `skillhub_overview` → `index.meaning_search` is `error` → `last_error` names the object
   and the endpoint's answer. A wrong chunk size: set `EMBEDDING_MAX_CHARS`. A dimension the
   table cannot take because it holds vectors: `truncate platform.embeddings;` and re-run.

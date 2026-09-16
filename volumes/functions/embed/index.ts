@@ -153,7 +153,12 @@ async function settings(force: boolean): Promise<Settings> {
   const prev: Settings = (await rpc("embedder_get", {})) ?? {};
   const fresh = prev.probed_at && (Date.now() - Date.parse(prev.probed_at)) < PROBE_TTL_MS;
   const same = prev.url === EMBEDDING_URL && prev.model === EMBEDDING_MODEL;
-  const envLimitStillApplies = !EMBEDDING_MAX_CHARS || (prev.limit_source === "env" && prev.max_chars === EMBEDDING_MAX_CHARS);
+  // A limit that came from EMBEDDING_MAX_CHARS is only valid while the variable still says
+  // so; once it is unset, probe again. Found 2026-09-16: a 3,000-character override left by
+  // a test survived the deploy that removed it.
+  const envLimitStillApplies = EMBEDDING_MAX_CHARS
+    ? (prev.limit_source === "env" && prev.max_chars === EMBEDDING_MAX_CHARS)
+    : prev.limit_source !== "env";
   if (!force && fresh && same && prev.dimension && prev.max_chars && envLimitStillApplies) return prev;
 
   const dimension = (await embedOnce(["probe"]))[0].length;

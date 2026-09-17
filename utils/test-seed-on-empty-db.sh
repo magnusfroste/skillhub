@@ -216,7 +216,9 @@ check "what only looks is a list; what changes is a decision" \
   "select (jsonb_array_length(platform.health()->'look') > 0)::text || ':' || bool_and((d->>'changes') is not null)::text from jsonb_array_elements(platform.health()->'decide') d" "true:true"
 check "the caretaker sees it inside the tool every agent runs" \
   "select (public.skillhub_overview('service_role')->'caretaker' ? 'verdict')::text || ':' || (public.skillhub_overview('agent_01')->>'caretaker' is null)::text" "true:true"
-q "select public.index_run_save(jsonb_build_object('model','probe','dimension',1536,'objects',3,'embedded',3,'chunks',4,'truncated',0,'failed',0,'requests',1,'pruned',0,'seconds',0.4))" >/dev/null
+q "select public.index_run_save(jsonb_build_object('model','probe','dimension',1536,'objects',3,'embedded',3,'chunks',4,'truncated',0,'failed',0,'requests',1,'pruned',0,'seconds',0.4,'tokens',4200))" >/dev/null
+check "what the index cost is remembered too" \
+  "select (select tokens from platform.index_runs order by at desc limit 1)::text || ':' || (select (platform.health()->'checks') @> '[{\"check\":\"embedding tokens\"}]')::text" "4200:true"
 check "a run is remembered, so flapping is answerable" \
   "select count(*)::text || ':' || (platform.health()->'checks' @> '[{\"check\":\"indexing, last 24h\"}]')::text from platform.index_runs" "1:true"
 q "select public.backup_record('content','/root/.skillhub-backups/probe',1024,'written by the empty-database test')" >/dev/null

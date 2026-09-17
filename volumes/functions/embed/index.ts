@@ -81,6 +81,9 @@ async function rpc(fn: string, args: Record<string, unknown>): Promise<any> {
 // Tokens the endpoint reported for the last request (usage.prompt_tokens), 0 if it did not
 // say. The probe uses it to measure characters per token for this tokenizer.
 let lastPromptTokens = 0;
+// Tokens this run has caused, probes included. The endpoint reports them and we threw the
+// number away; a store that cannot say what it spent cannot be asked to spend less.
+let runTokens = 0;
 // Truncation is a RETRY, never the default. Armed on the first request, vLLM cuts an
 // over-budget input instead of refusing it -- and a rule indexed in part is worse than one
 // not indexed, because nothing says so. It was not observable either: usage.prompt_tokens
@@ -108,6 +111,7 @@ async function embedOnce(texts: string[], truncate = truncateTokens): Promise<nu
   if (!res.ok) throw new Error(`The embeddings endpoint answered ${res.status}: ${text.slice(0, 300)}`);
   const data = JSON.parse(text);
   lastPromptTokens = Number(data.usage?.prompt_tokens ?? 0) || 0;
+  runTokens += lastPromptTokens;
   const vectors: number[][] = (data.data ?? []).map((d: any) => d.embedding);
   if (vectors.length !== texts.length) throw new Error(`Got ${vectors.length} vectors for ${texts.length} texts.`);
   return vectors;
@@ -367,11 +371,13 @@ Deno.serve(async (req: Request) => {
   const budgetMs = Math.min(Math.max(Number(url.searchParams.get("budget") ?? "60"), 1), 240) * 1000;
   const deadline = Date.now() + budgetMs;
   const started = Date.now();
+  runTokens = 0;
   const now = () => new Date().toISOString();
   // One row per run, kept for seven days. platform.embedder holds the LAST run, which
   // cannot answer "has this been failing all night and recovering by morning".
   const note = (p: Record<string, unknown>) =>
-    rpc("index_run_save", { p: { ...p, seconds: Number(((Date.now() - started) / 1000).toFixed(2)) } }).catch(() => {});
+    rpc("index_run_save", { p: { ...p, tokens: runTokens,
+      seconds: Number(((Date.now() - started) / 1000).toFixed(2)) } }).catch(() => {});
 
   if (!EMBEDDING_URL) {
     try { await rpc("embedder_save", { p: { status: "off", last_error: null, last_run: now() } }); } catch { /* the message below still stands */ }
@@ -443,7 +449,7 @@ Deno.serve(async (req: Request) => {
       status: "done",
       model: s.model, dimension: s.dimension, max_chars_per_chunk: s.max_chars, limit_from: s.limit_source,
       requests, max_inputs_per_request: EMBEDDING_MAX_INPUTS, passes,
-      objects, embedded: saved, chunks, pruned,
+      objects, embedded: saved, chunks, pruned, tokens: runTokens,
       truncated, failed: errors.length, errors: errors.slice(0, 5),
       ...(ratioNote ? { resized: ratioNote } : {}),
       ...(dimNote ? { dimension_note: dimNote } : {}),

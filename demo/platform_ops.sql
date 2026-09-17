@@ -30,17 +30,19 @@ create table if not exists platform.index_runs (
   requests   int,          -- upstream calls made
   pruned     int,          -- vectors removed for objects that went private or were retired
   seconds    numeric(8,2),
+  tokens     bigint,       -- what the endpoint says it charged for, probes included
   error      text
 );
+alter table platform.index_runs add column if not exists tokens bigint;
 create index if not exists index_runs_at_idx on platform.index_runs (at desc);
 comment on table platform.index_runs is 'One row per indexing run, kept for seven days. The last run is in platform.embedder; this is whether it has been flapping.';
 
 create or replace function public.index_run_save(p jsonb) returns bigint
 language sql security definer set search_path = public, platform as $$
-  insert into platform.index_runs (model, dimension, objects, embedded, chunks, truncated, failed, requests, pruned, seconds, error)
+  insert into platform.index_runs (model, dimension, objects, embedded, chunks, truncated, failed, requests, pruned, seconds, tokens, error)
   values (p->>'model', (p->>'dimension')::int, (p->>'objects')::int, (p->>'embedded')::int,
           (p->>'chunks')::int, (p->>'truncated')::int, (p->>'failed')::int, (p->>'requests')::int,
-          (p->>'pruned')::int, (p->>'seconds')::numeric, p->>'error')
+          (p->>'pruned')::int, (p->>'seconds')::numeric, (p->>'tokens')::bigint, p->>'error')
   returning id;
 $$;
 revoke execute on function public.index_run_save(jsonb) from public, anon, authenticated;
@@ -67,6 +69,17 @@ $$;
 revoke execute on function public.backup_record(text, text, bigint, text) from public, anon, authenticated;
 grant execute on function public.backup_record(text, text, bigint, text) to service_role, postgres;
 
+-- What the index has cost, by day. Most of it is rebuilds: a rebuild embeds every object
+-- in the store again, which is the whole point and also the whole bill.
+create or replace view platform.v_embedding_spend as
+select at::date as day, count(*) as runs,
+       coalesce(sum(embedded), 0) as objects_embedded,
+       coalesce(sum(tokens), 0) as tokens,
+       count(*) filter (where objects > 0 and embedded = objects and objects > 5) as looks_like_a_rebuild
+from platform.index_runs
+group by 1 order by 1 desc;
+comment on view platform.v_embedding_spend is 'Tokens the embedding endpoint charged for, by day, as it reported them. Seven days, like the runs it reads.';
+
 -- ---------------------------------------------------------------------------
 -- 3) The one call.
 --
@@ -87,6 +100,7 @@ declare
   backup_at timestamptz; backup_days numeric;
   runs_24h int; runs_failed int; runs_trunc int;
   db_size text; emb_rows bigint; net_ok boolean; waiting_n int;
+  spend_24h bigint; rebuilds_24h int;
   -- A check is: what it is called, how it stands, what is true, and -- when something
   -- should be done -- the call that does it. Built as jsonb rather than a temp table
   -- because a stable function may not create one, and this has to stay stable to be
@@ -186,6 +200,18 @@ begin
       'detail', format('%s run(s), %s object(s) failed, %s chunk(s) did not fit.', runs_24h, runs_failed, runs_trunc),
       'run', case when runs_failed > 0 or runs_trunc > 0
                   then 'select at, objects, embedded, truncated, failed, left(error,120) from platform.index_runs where at > now() - interval ''24 hours'' order by at desc;' end);
+  end if;
+
+  -- What it costs to keep the index. Never a reason for alarm -- it is reported so that a
+  -- rebuild is a known expense rather than a surprise on someone's bill.
+  select coalesce(sum(tokens), 0), count(*) filter (where embedded > 5)
+    into spend_24h, rebuilds_24h
+    from platform.index_runs where at > now() - interval '24 hours' and tokens is not null;
+  if spend_24h > 0 then
+    cks := cks || jsonb_build_object('check','embedding tokens','state','ok',
+      'detail', format('%s token(s) in the last 24 hours, %s over seven days. A rebuild embeds every object again, which is where nearly all of it goes: %s big run(s) today. The endpoint reports these; what they cost depends on your price per million.',
+                       spend_24h, (select coalesce(sum(tokens),0) from platform.index_runs where tokens is not null), rebuilds_24h),
+      'run', 'select * from platform.v_embedding_spend;');
   end if;
 
   select exists (select 1 from pg_extension where extname = 'pg_net') into net_ok;
@@ -317,7 +343,10 @@ grant select on all tables in schema platform to anon, authenticated, service_ro
 -- ---------------------------------------------------------------------------
 do $do$
 begin
-  if not exists (select 1 from public.skill_library where slug = 'caretaker-operations' and version = '1.0.0') then
+  -- A new VERSION, never an edit -- the same rule load-from-source-system learned on
+  -- 2026-09-16: a guard on the current version means a running instance never receives a
+  -- correction, and an agent follows the text it has.
+  if not exists (select 1 from public.skill_library where slug = 'caretaker-operations' and version = '1.1.0') then
     insert into public.skill_library (slug, name, description, skill_md, version, author_name, license, tags, visibility, status)
     values (
       'caretaker-operations',
@@ -326,7 +355,7 @@ begin
       $md$---
     name: caretaker-operations
     description: Follow this when you hold the service key. Read first, act after; most of what looks like a problem is a question.
-    version: 1.0.0
+    version: 1.1.0
     license: MIT
     ---
 
@@ -398,6 +427,10 @@ begin
 
         select platform.reindex('<why, in a sentence>');
 
+    It is not free: every object in the store is embedded again, and `skillhub_overview` reports
+    the tokens that cost under `embedding tokens`. Cheap on a small store, worth a thought on a
+    large one -- and never a reason to leave a wrong index in place.
+
     It empties `platform.embeddings` and builds it again from the content. Nothing is lost:
     every vector is derived from a skill, a note, a document or a column comment, which is why
     this is the one delete in the store that is safe. It is the right call after an embedding
@@ -440,10 +473,13 @@ begin
     design -- keyword search keeps working when meaning search is down -- so the number that
     moved is usually the only sign there was one.
     $md$,
-      '1.0.0', 'skillhub', 'MIT',
+      '1.1.0', 'skillhub', 'MIT',
       '{caretaker,operations,admin,house-standard}', 'public', 'published'
     );
   end if;
+  update public.skill_library
+     set superseded_by = '1.1.0', updated_at = now()
+   where slug = 'caretaker-operations' and version <> '1.1.0' and superseded_by is null;
 end $do$;
 
 -- It is listed with the other house standards in platform_loading.sql, which owns that section.

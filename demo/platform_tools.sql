@@ -981,6 +981,13 @@ grant execute on function public.skillhub_load_rows(text,text,text,jsonb,text,te
 -- target_table is the caretaker's decision, and it overrides what the agent suggested: the
 -- near-duplicate guard refused "support_tickets_v2" beside "support_tickets" on the first run
 -- of this -- correctly -- and the right answer was to load into the one that exists.
+-- Earlier iterations of this function took two and three arguments, and CREATE OR REPLACE
+-- cannot remove a signature: an instance that lived through them ends up with all three, and
+-- the caretaker's own call -- one integer, the rest defaulted -- becomes ambiguous. Found
+-- 2026-09-17 on dev, where load_registered_file(13) answered "is not unique" instead of
+-- building a table. The same drift the retire_skill and embed_save_chunks signatures had.
+drop function if exists platform.load_registered_file(bigint, text);
+drop function if exists platform.load_registered_file(bigint, text, text);
 create or replace function platform.load_registered_file(request_id bigint, resolved_by text default 'service_role',
   loader_url text default 'http://functions:9000/skillhub', target_table text default null) returns text
 language plpgsql security definer set search_path = public, platform as $$

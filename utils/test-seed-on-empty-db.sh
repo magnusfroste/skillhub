@@ -300,6 +300,10 @@ check "answering tells you to write it down, which is the whole point" \
 q "select public.skillhub_ask('agent_03','Has anybody worked out where the old audit spreadsheets are kept these days?')" >/dev/null
 check "health notices a question nobody has answered" \
   "select ((platform.health()->'checks') @> '[{\"check\":\"questions on the board\"}]')::text" "true"
+# One integer and the rest defaulted is how a caretaker calls this. Two earlier signatures
+# lived on dev and made that call ambiguous (2026-09-17); the seed drops them now.
+check "the caretaker has exactly one load_registered_file to call" \
+  "select count(*) from pg_proc where proname='load_registered_file' and pronamespace='platform'::regnamespace" "1"
 check "retiring the note works too" \
   "select (public.skillhub_retire('agent_01','note',(select id::text from public.notes where title='Seed test'),'seed test cleanup') ? 'retired_by')::text" "true"
 

@@ -658,6 +658,51 @@ the default `maintenance_work_mem` took 285 s at 1,536 and 404 s at 3,072 for 25
 `platform.reindex` never does that — it empties the table and the index fills row by row —
 but anyone recreating the index by hand should raise it first.
 
+## 26. A noticeboard, not a bus: agents asking each other
+
+Decided 2026-09-17, to be built after the first delivery.
+
+Watching agent_01 write something and agent_02 find it raises the obvious next question: can
+they ask each other? Somebody in an office says *does anyone know where the hole punch is*,
+and whoever knows answers. A2A and the like exist for that, but the interesting version here
+is the one that lives in the store.
+
+**The thing that decides the design: these agents are not processes, they are conversations.**
+A Hermes agent runs when a person is talking to it. Nothing is listening in between, so
+nothing in the store can call an agent -- it can only leave something that is there when the
+agent next looks. So this is a noticeboard in the tea room, not a walkie-talkie, and the joke
+works precisely because the note stays up.
+
+Which fits the grain of what already exists. A structure request is exactly this pattern for
+tables: an agent that has nowhere to put data leaves one, and reads the answer in
+`skillhub_overview`. What is missing is the same thing for knowledge -- an agent that cannot
+find something has nowhere to put the question.
+
+| Part | What |
+|---|---|
+| `platform.asks` | who asked, the question, an optional addressee, open or answered, when |
+| `skillhub_ask(question, for_agent?)` | leaves the note |
+| `skillhub_answer(ask_id, answer)` | answers it; more than one agent may |
+| `skillhub_overview` → `asked_of_you`, `open_questions` | what an agent sees at the start of a session, beside `your_requests` |
+
+**What makes it worth building is not the message but the trace it leaves.** An answered
+question is a note waiting to be written, and the rule has to say so: *if you answered
+something that was not in the store, write it down, so the next person does not have to ask.*
+Then the noticeboard is a pump that fills the store rather than a conversation beside it.
+Without that rule this is Slack in Postgres, which is a thing to avoid on purpose.
+
+**The limit, stated plainly: there is no push.** A question is seen when a colleague's agent
+next starts a session -- in ten minutes, or tomorrow. The store could push: pg_net is there
+and a Hermes gateway has an HTTP API. It would mean holding every agent's URL and key in the
+database, and *no key material in the database* is one of the few things this design has never
+traded away. Live agent-to-agent belongs to A2A, and A2A assumes agents are addressable
+services. Ours are people's laptops and a dashboard.
+
+Two more things to get right when it is built. Eight agents each seeing a list of open
+questions every session is a way to manufacture bad answers, so the list is short, oldest
+first, and answering is optional. And a question closes: one ask, its answers, done -- the
+store is not a messaging app, and the artifact is the point.
+
 ---
 
 ## What this does not do yet

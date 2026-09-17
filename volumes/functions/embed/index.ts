@@ -49,9 +49,17 @@ const EMBEDDING_MODEL = Deno.env.get("EMBEDDING_MODEL") ?? "text-embedding-3-sma
 // CPU deployment measured 2026-09-14), OpenAI at 2048. Chunks are sent in slices of this
 // size, so a small server never sees a request it will refuse.
 const EMBEDDING_MAX_INPUTS = Math.max(1, Number(Deno.env.get("EMBEDDING_MAX_INPUTS") ?? "8"));
-// Set it and the probe is skipped: this many characters per chunk, whatever the endpoint
-// says. 0 (the default) means find out.
+// The largest input the endpoint accepts. Set it and the probe is skipped; 0 (the default)
+// means find out. This is a CEILING, not the chunk size.
 const EMBEDDING_MAX_CHARS = Math.max(0, Number(Deno.env.get("EMBEDDING_MAX_CHARS") ?? "0"));
+// What text is actually cut at, which is a retrieval decision and not a model limit. Chunk
+// size was the model's ceiling until 2026-09-17, and an agent's 18,000-character research
+// note therefore became three vectors, each an average of ten sections: questions about
+// section 7.3 landed on the chunk that began at 3.4. A model accepting 2,048 tokens is not a
+// reason to ask one vector to stand for all of them. Smaller chunks cost no more tokens --
+// the same text is embedded either way -- only more rows, which matters above 4,000
+// dimensions where there is no index and a search is linear in them.
+const CHUNK_TARGET = Math.max(300, Number(Deno.env.get("EMBEDDING_CHUNK_CHARS") ?? "2000"));
 // vLLM's own truncate_prompt_tokens, sent only when set. OpenAI rejects unknown fields.
 const EMBEDDING_TRUNCATE_TOKENS = Number(Deno.env.get("EMBEDDING_TRUNCATE_TOKENS") ?? "0") || 0;
 // Characters per token, conservatively, for mixed Swedish and English -- measured around
@@ -63,7 +71,7 @@ const PROBE_TTL_MS = 24 * 3600 * 1000;
 type Candidate = { source: string; id: string; chunk: number; head: string; text: string; text_hash: string };
 type Settings = {
   url?: string | null; model?: string | null; dimension?: number | null; max_tokens?: number | null;
-  max_chars?: number | null; limit_source?: string | null; probed_at?: string | null; status?: string | null;
+  max_chars?: number | null; chunk_chars?: number | null; limit_source?: string | null; probed_at?: string | null; status?: string | null;
   chars_per_token?: number | null; table_dimension?: number | null;
 };
 
@@ -267,7 +275,8 @@ async function settings(force: boolean): Promise<Settings> {
   const envLimitStillApplies = EMBEDDING_MAX_CHARS
     ? (prev.limit_source === "env" && prev.max_chars === EMBEDDING_MAX_CHARS)
     : prev.limit_source !== "env";
-  if (!force && fresh && same && prev.dimension && prev.max_chars && envLimitStillApplies) return prev;
+  const cutStillApplies = prev.chunk_chars === Math.min(CHUNK_TARGET, Number(prev.max_chars) || CHUNK_TARGET);
+  if (!force && fresh && same && prev.dimension && prev.max_chars && envLimitStillApplies && cutStillApplies) return prev;
 
   const dimension = (await embedOnce(["probe"]))[0].length;
   let max_tokens: number | null = null, max_chars: number, limit_source: string;
@@ -295,8 +304,10 @@ async function settings(force: boolean): Promise<Settings> {
     }
   }
   max_chars = Math.max(500, Math.min(max_chars, 60000));
-  const s: Settings = { url: EMBEDDING_URL, model: EMBEDDING_MODEL, dimension, max_tokens, max_chars, limit_source,
-    chars_per_token: ratio, probed_at: new Date().toISOString() };
+  // The cut is the retrieval target, or the ceiling when the ceiling is lower.
+  const chunk_chars = Math.min(CHUNK_TARGET, max_chars);
+  const s: Settings = { url: EMBEDDING_URL, model: EMBEDDING_MODEL, dimension, max_tokens, max_chars, chunk_chars,
+    limit_source, chars_per_token: ratio, probed_at: new Date().toISOString() };
   await rpc("embedder_save", { p: s });
   return { ...prev, ...s };
 }
@@ -320,7 +331,7 @@ async function ensureDimension(dimension: number): Promise<string | null> {
 /** One pass: take up to `batch` objects that lack a current embedding, embed their chunks,
  *  save each object whole. Returns what it managed. */
 async function onePass(s: Settings, batch: number) {
-  const candidates: Candidate[] = await rpc("embed_candidates", { max_rows: batch, max_chars: s.max_chars });
+  const candidates: Candidate[] = await rpc("embed_candidates", { max_rows: batch, max_chars: s.chunk_chars ?? s.max_chars });
   if (!candidates.length) return { objects: 0, saved: 0, chunks: 0, truncated: 0, cutLongest: 0, requests: 0, errors: [] as string[] };
 
   // Group chunks by object, in the order the store gave them.
@@ -348,7 +359,7 @@ async function onePass(s: Settings, batch: number) {
       await rpc("embed_save_chunks", {
         p_source: chunks[0].source, p_id: chunks[0].id, p_model: s.model,
         p_vectors: idx.map((i) => vectors[i]), p_heads: chunks.map((c) => c.head), p_text_hash: chunks[0].text_hash,
-        p_chunk_chars: s.max_chars,
+        p_chunk_chars: s.chunk_chars ?? s.max_chars,
       });
       saved++; savedChunks += chunks.length;
     } catch (e) {
@@ -447,7 +458,8 @@ Deno.serve(async (req: Request) => {
 
     return Response.json({
       status: "done",
-      model: s.model, dimension: s.dimension, max_chars_per_chunk: s.max_chars, limit_from: s.limit_source,
+      model: s.model, dimension: s.dimension, chunk_chars: s.chunk_chars, the_model_accepts: s.max_chars,
+      limit_from: s.limit_source,
       requests, max_inputs_per_request: EMBEDDING_MAX_INPUTS, passes,
       objects, embedded: saved, chunks, pruned, tokens: runTokens,
       truncated, failed: errors.length, errors: errors.slice(0, 5),

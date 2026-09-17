@@ -100,7 +100,7 @@ declare
   backup_at timestamptz; backup_days numeric;
   runs_24h int; runs_failed int; runs_trunc int;
   db_size text; emb_rows bigint; net_ok boolean; waiting_n int;
-  spend_24h bigint; rebuilds_24h int;
+  spend_24h bigint; rebuilds_24h int; cut_now int;
   -- A check is: what it is called, how it stands, what is true, and -- when something
   -- should be done -- the call that does it. Built as jsonb rather than a temp table
   -- because a stable function may not create one, and this has to stay stable to be
@@ -149,10 +149,11 @@ begin
   elsif coalesce(e.last_truncated,0) > 0 then
     cks := cks || jsonb_build_object('check','meaning search','state','attention',
       'detail', format('%s chunk(s) did not fit the model and were left unindexed on purpose. The chunk size has been lowered to %s characters.', e.last_truncated, e.max_chars),
-      'run','Let the next run take them; if it repeats, pin EMBEDDING_MAX_CHARS below ' || e.max_chars);
+      'run','Let the next run take them; if it repeats, lower EMBEDDING_CHUNK_CHARS below ' || coalesce(e.chunk_chars, e.max_chars));
   else
     cks := cks || jsonb_build_object('check','meaning search','state','ok',
-      'detail', format('On: %s, %s dimensions, %s characters per chunk (%s).', e.model, e.dimension, e.max_chars, e.limit_source),
+      'detail', format('On: %s, %s dimensions. Text is cut into chunks of %s characters; the endpoint accepts up to %s (%s).',
+                       e.model, e.dimension, coalesce(e.chunk_chars, e.max_chars), e.max_chars, e.limit_source),
       'run', null);
   end if;
 
@@ -161,24 +162,25 @@ begin
   -- exactly why it needs saying: long content stays matched in pieces of the old size until
   -- somebody rebuilds. A quarter either way, so a measured ratio drifting a little does not
   -- nag; the ratio is also held steady per model by the indexer.
-  if e.status = 'ok' and e.max_chars is not null then
+  if e.status = 'ok' and coalesce(e.chunk_chars, e.max_chars) is not null then
+    cut_now := coalesce(e.chunk_chars, e.max_chars);
     select count(*), mode() within group (order by chunk_chars)
       into waiting_n, emb_rows
       from platform.embeddings
-     where chunk_chars is not null and abs(chunk_chars - e.max_chars) > 0.25 * e.max_chars;
+     where chunk_chars is not null and abs(chunk_chars - cut_now) > 0.25 * cut_now;
     select count(*) into runs_24h from platform.embeddings where chunk_chars is null;
     if waiting_n = 0 and runs_24h > 0 then
       cks := cks || jsonb_build_object('check','chunk size','state','attention',
         'detail', format('%s vector(s) were written before the store recorded the chunk size they were cut at, so it cannot tell whether they match the %s characters in force now. Rebuild once: afterwards every vector carries its size and this check says something only when it matters.',
-                         runs_24h, e.max_chars),
+                         runs_24h, cut_now),
         'run', 'select platform.reindex(''recording the chunk size of every vector'');',
         'changes', 'Empties the vector index and rebuilds it at the chunk size in force. Nothing but the index is touched and nothing is lost; search by meaning is thin for the minutes it takes.');
     end if;
     if waiting_n > 0 then
       cks := cks || jsonb_build_object('check','chunk size','state','attention',
         'detail', format('The store now cuts text into chunks of %s characters, but %s vector(s) were cut at %s. Search still works; long content is matched in pieces of the old size, so a passage deep in a long text can be missed, until the index is rebuilt. Short objects are one chunk either way and come back unchanged.',
-                         e.max_chars, waiting_n, emb_rows),
-        'run', format('select platform.reindex(''chunk size changed from %s to %s characters'');', emb_rows, e.max_chars),
+                         cut_now, waiting_n, emb_rows),
+        'run', format('select platform.reindex(''chunk size changed from %s to %s characters'');', emb_rows, cut_now),
         'changes', 'Empties the vector index and rebuilds it at the chunk size in force. Nothing but the index is touched and nothing is lost; search by meaning is thin for the minutes it takes.');
     end if;
   end if;

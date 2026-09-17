@@ -126,6 +126,12 @@ check "the loading house standard is at 1.1.0 and the agent path" \
 # Chunking (2026-09-16): a long text is cut on its headings, each chunk carries the title,
 # the object is saved as several vectors and comes back from similarity ONCE, naming the
 # section that matched. An embedder built for RAG (512-2048 tokens) needs exactly this.
+# The pointer names the first AND last heading the chunk holds: one alone sent a reader
+# asking about section 7.3 to the heading the chunk began at, 3.4 (2026-09-17).
+check "the pointer names the range of headings a chunk covers" \
+  "select head from platform.chunk_text('T', '## One'||E'\n'||repeat('a ',300)||E'\n\n## Two'||E'\n'||repeat('b ',300)||E'\n\n## Three'||E'\n'||repeat('c ',300), 4000) limit 1" "## One  ...  ## Three"
+check "a single-heading chunk names just that one" \
+  "select head from platform.chunk_text('T', '## Only'||E'\n'||repeat('a ',100), 4000) limit 1" "## Only"
 check "a long text is chunked on its headings, title on every chunk" \
   "select count(*)::text || ':' || bool_and(content like 'Title%')::text || ':' || max(head) from platform.chunk_text('Title', '## One'||E'\n'||repeat('a ',900)||E'\n\n## Two'||E'\n'||repeat('b ',900)||E'\n\n## Three'||E'\n'||repeat('c ',900), 2500)" "3:true:## Two"
 check "a short text stays one chunk" \

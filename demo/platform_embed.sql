@@ -11,6 +11,22 @@
 -- pieces are packed back together up to the budget, so a short skill stays one chunk and a
 -- long one becomes a handful, each carrying the title so the vector knows what it is part of.
 -- head is the first line of the chunk: what a hit reports as "found in section ...".
+-- What a hit reports as the place to start reading. The FIRST and the LAST heading in the
+-- chunk, because one of them alone is a poor pointer: a chunk that spans sections 3.4 to 7.3
+-- told a reader asking about 7.3 to look at 3.4 (measured on an agent's research note,
+-- 2026-09-17). A chunk with no heading falls back to its first line.
+create or replace function platform.chunk_head(chunk_body text) returns text
+language sql immutable as $$
+  with h as (select l from regexp_split_to_table(chunk_body, E'\n') with ordinality as t(l, ord)
+              where l ~ '^#{1,6} ' order by ord)
+  select case
+    when (select count(*) from h) = 0 then left(split_part(btrim(chunk_body), E'\n', 1), 80)
+    when (select count(*) from h) = 1 then left((select l from h), 120)
+    else left((select l from h limit 1), 70) || '  ...  ' || left((select l from h offset (select count(*) - 1 from h)), 70)
+  end;
+$$;
+comment on function platform.chunk_head(text) is 'The first and last heading a chunk contains, for a hit to name as the place to start reading.';
+
 create or replace function platform.chunk_text(title text, body text, max_chars int default 6000)
 returns table (chunk int, head text, content text)
 language plpgsql immutable as $$
@@ -45,13 +61,13 @@ begin
   end if;
   foreach u in array units loop
     if cur <> '' and length(cur) + 2 + length(u) > budget then
-      chunk := n; head := left(split_part(btrim(cur), E'\n', 1), 80); content := t || E'\n' || cur;
+      chunk := n; head := platform.chunk_head(cur); content := t || E'\n' || cur;
       return next; n := n + 1; cur := '';
     end if;
     cur := case when cur = '' then u else cur || E'\n\n' || u end;
   end loop;
   if cur <> '' then
-    chunk := n; head := left(split_part(btrim(cur), E'\n', 1), 80); content := t || E'\n' || cur;
+    chunk := n; head := platform.chunk_head(cur); content := t || E'\n' || cur;
     return next;
   end if;
 end $$;
@@ -161,7 +177,7 @@ begin
   delete from platform.embeddings where source = p_source and id = p_id and model = p_model;
   for k in 0 .. n - 1 loop
     insert into platform.embeddings (source, id, model, chunk, head, vector, text_hash, chunk_chars)
-    values (p_source, p_id, p_model, k, left(p_heads ->> k, 80), (p_vectors -> k #>> '{}')::vector, p_text_hash, p_chunk_chars);
+    values (p_source, p_id, p_model, k, left(p_heads ->> k, 160), (p_vectors -> k #>> '{}')::vector, p_text_hash, p_chunk_chars);
   end loop;
   return jsonb_build_object('source', p_source, 'id', p_id, 'model', p_model, 'chunks', n);
 end $$;
@@ -179,7 +195,8 @@ create table if not exists platform.embedder (
   model         text,
   dimension     int,
   max_tokens    int,
-  max_chars     int,
+  max_chars     int,            -- the largest input the endpoint accepts: a ceiling
+  chunk_chars   int,            -- what text is actually cut at: a retrieval decision
   limit_source  text,            -- 'tei /info' | 'vllm /v1/models' | 'probe' | 'env'
   probed_at     timestamptz,
   status        text,            -- 'off' | 'ok' | 'error'
@@ -191,6 +208,7 @@ create table if not exists platform.embedder (
   last_error    text
 );
 alter table platform.embedder add column if not exists last_truncated int;
+alter table platform.embedder add column if not exists chunk_chars int;
 alter table platform.embedder add column if not exists chars_per_token numeric;
 comment on table platform.embedder is 'What the indexer found out about the embedding endpoint, and how its last run went. Written by the indexer; read by skillhub_overview.';
 
@@ -202,16 +220,18 @@ comment on table platform.embedder is 'What the indexer found out about the embe
 create or replace function public.embedder_save(p jsonb) returns jsonb
 language plpgsql security definer set search_path = public, platform as $$
 begin
-  insert into platform.embedder as x (id, url, model, dimension, max_tokens, max_chars, limit_source, probed_at,
+  insert into platform.embedder as x (id, url, model, dimension, max_tokens, max_chars, chunk_chars, limit_source, probed_at,
                                       status, last_run, last_embedded, last_failed, last_truncated, chars_per_token, last_error)
   values (1, p->>'url', p->>'model', (p->>'dimension')::int, (p->>'max_tokens')::int, (p->>'max_chars')::int,
+          (p->>'chunk_chars')::int,
           p->>'limit_source', (p->>'probed_at')::timestamptz, p->>'status', (p->>'last_run')::timestamptz,
           (p->>'last_embedded')::int, (p->>'last_failed')::int, (p->>'last_truncated')::int,
           (p->>'chars_per_token')::numeric, p->>'last_error')
   on conflict (id) do update set
     url = coalesce(excluded.url, x.url), model = coalesce(excluded.model, x.model),
     dimension = coalesce(excluded.dimension, x.dimension), max_tokens = coalesce(excluded.max_tokens, x.max_tokens),
-    max_chars = coalesce(excluded.max_chars, x.max_chars), limit_source = coalesce(excluded.limit_source, x.limit_source),
+    max_chars = coalesce(excluded.max_chars, x.max_chars), chunk_chars = coalesce(excluded.chunk_chars, x.chunk_chars),
+    limit_source = coalesce(excluded.limit_source, x.limit_source),
     probed_at = coalesce(excluded.probed_at, x.probed_at), status = coalesce(excluded.status, x.status),
     last_run = coalesce(excluded.last_run, x.last_run), last_embedded = coalesce(excluded.last_embedded, x.last_embedded),
     last_failed = coalesce(excluded.last_failed, x.last_failed),
@@ -245,7 +265,8 @@ language sql stable security definer set search_path = public, platform as $$
     'meaning_search', case when e.status = 'ok' then 'on' when e.status = 'error' then 'error' else 'off' end,
     'model', e.model, 'dimension', e.dimension,
     'table_dimension', (select atttypmod from pg_attribute where attrelid = 'platform.embeddings'::regclass and attname = 'vector'),
-    'max_chars_per_chunk', e.max_chars, 'limit_from', e.limit_source,
+    'max_chars_per_chunk', coalesce(e.chunk_chars, e.max_chars),
+    'the_model_accepts', e.max_chars, 'limit_from', e.limit_source,
     'objects', (select count(distinct (source, id)) from platform.embeddings),
     'chunks', (select count(*) from platform.embeddings),
     'waiting', jsonb_array_length(public.embed_candidates(1000, 100000)),
@@ -261,9 +282,11 @@ language sql stable security definer set search_path = public, platform as $$
                  when coalesce(e.last_truncated, 0) > 0 then e.last_truncated || ' chunk(s) did not fit the model''s input limit, so that object is NOT indexed -- deliberately, because a rule indexed in part is worse than one nobody can find. The chunk size has been lowered and the next run takes it again; if last_error says the limit came from EMBEDDING_MAX_CHARS, lower that instead.'
                  when e.status = 'error' then 'The indexer''s last run failed; see last_error. Keyword search is unaffected.'
                  else null end)
-  from (select * from platform.embedder where id = 1
-        union all select 1, null,null,null,null,null,null,null,'off',null,null,null,null,null,null
-        limit 1) e;
+  -- A left join, not a union of nulls: the union had to be counted against the table's
+  -- columns, and on 2026-09-17 a new column broke this function -- which the indexer calls
+  -- on every run, so the store stopped indexing while the seed reported the failure and
+  -- nothing else did. One row either way, with every column null when there is no row.
+  from (select 1) d left join platform.embedder e on e.id = 1;
 $$;
 comment on function public.embedder_status() is 'Whether search by meaning is on, which model, and how the last indexing run went. Shown in skillhub_overview.';
 

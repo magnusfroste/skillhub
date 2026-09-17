@@ -29,7 +29,7 @@ REPO="$(cd "$(dirname "$0")/.." && pwd -P)"
 REPO="${REPO%/}"   # "" when mounted at the root, so "${REPO}/demo" is "/demo", not "//demo"
 DSN="${1:-}"
 
-FILES="skill_library.sql conventions.sql platform.sql platform_lifecycle.sql platform_loading.sql platform_entry.sql platform_vector.sql platform_embed.sql platform_ops.sql platform_tools.sql"
+FILES="skill_library.sql conventions.sql platform.sql platform_lifecycle.sql platform_loading.sql platform_entry.sql platform_vector.sql platform_embed.sql platform_ops.sql platform_asks.sql platform_tools.sql"
 
 run() {
   if [ -n "$DSN" ]; then

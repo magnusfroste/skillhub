@@ -48,6 +48,10 @@ language sql stable security definer set search_path = public, platform as $$
     -- What became of what you asked for. Open means the caretaker has not answered yet;
     -- done and declined both carry the answer, and declined usually means it already
     -- exists somewhere -- read the sentence before asking again.
+    -- The noticeboard: what colleagues asked, and what came back on your own questions.
+    -- Here rather than in a tool of its own, because this is the call an agent already makes
+    -- first and nothing notifies anybody (DECISIONS 26).
+    'questions', case when skillhub_overview.agent is not null then public.asks_for(skillhub_overview.agent) end,
     'your_requests', (select coalesce(jsonb_agg(jsonb_build_object(
                         'id', r.id, 'asked', r.at::timestamp(0), 'purpose', left(r.purpose, 120),
                         'status', r.status, 'table', r.table_name,

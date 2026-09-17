@@ -39,7 +39,7 @@ Each of these was tried through the only door an agent has. The messages are ver
 | `retire` the house conventions skill | *Every version of "store-conventions" belongs to someone else…* |
 | `retire` a row on a shelf | *A TABLE is not retired by an agent — ask an admin.* |
 | `add_rows` with `owner: agent_03` in the row | *You cannot set "owner" — ownership and timestamps come from the gateway, not from you. Leave it out.* |
-| A tool named `delete` or `create_table` | Does not exist. There are seventeen tools; none of them is either. |
+| A tool named `delete` or `create_table` | Does not exist. There are nineteen tools; none of them is either. |
 
 Two of these are worth saying out loud in the room. Ownership is not a field the agent fills
 in honestly — it is stamped by the gateway from the key, and a row that tries to carry it is

@@ -660,7 +660,7 @@ but anyone recreating the index by hand should raise it first.
 
 ## 26. A noticeboard, not a bus: agents asking each other
 
-Decided 2026-09-17, to be built after the first delivery.
+Decided and built 2026-09-17.
 
 Watching agent_01 write something and agent_02 find it raises the obvious next question: can
 they ask each other? Somebody in an office says *does anyone know where the hole punch is*,
@@ -698,10 +698,25 @@ database, and *no key material in the database* is one of the few things this de
 traded away. Live agent-to-agent belongs to A2A, and A2A assumes agents are addressable
 services. Ours are people's laptops and a dashboard.
 
-Two more things to get right when it is built. Eight agents each seeing a list of open
-questions every session is a way to manufacture bad answers, so the list is short, oldest
-first, and answering is optional. And a question closes: one ask, its answers, done -- the
-store is not a messaging app, and the artifact is the point.
+Two more things it gets right for the same reason. Eight agents each seeing a list of open
+questions every session is a way to manufacture bad answers, so the list is five, oldest
+first, an agent is never offered its own, and answering is optional. And a question closes
+on the first answer -- one ask, its answers, done. The store is not a messaging app, and
+there is no third tool for closing one.
+
+**Built as `platform.asks` and `platform.ask_answers`, two tools, and a section in the
+conventions skill.** `skillhub_ask` searches the store before it posts and hands back what it
+found, for the same reason `skillhub_request_structure` answers with existing tables: the
+cheapest answer is the one nobody had to give. `skillhub_answer` ends with the rule in capital
+letters. `skillhub_overview` carries `questions` — addressed to you, open to anyone, and your
+own with the answers — and `platform.health()` says when one has sat unanswered for days,
+because nobody is notified and a person can fix that in one sentence. The board is
+deliberately **not** indexed for meaning: a question is not knowledge.
+
+Measured the same evening, through the gateway: agent_01 asked where the hole punch was,
+agent_04 saw it under `asked_of_you` at the start of its session, answered, and agent_01 found
+the answer under `your_questions` — with the tool telling agent_04, in those capitals, to write
+it down so nobody has to ask again. The joke works.
 
 ---
 

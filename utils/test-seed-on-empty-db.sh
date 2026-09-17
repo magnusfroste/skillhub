@@ -74,8 +74,8 @@ check "the index-on-write trigger is installed" \
 # live in the edge function (they talk to Storage), and skillhub_load_rows is SQL with no
 # tool of its own -- the loader calls it. Counting SQL, not tools, is what this database
 # receipt can verify.
-check "the seventeen skillhub_ functions exist" \
-  "select count(distinct proname) from pg_proc where proname like 'skillhub\\_%'" "17"
+check "the nineteen skillhub_ functions exist" \
+  "select count(distinct proname) from pg_proc where proname like 'skillhub\\_%'" "19"
 check "rules are readable" \
   "select (public.skillhub_rules() ? 'placement_rule')::text" "true"
 check "overview answers" \
@@ -279,6 +279,27 @@ q "select public.embed_save_chunks('schema','notes','probe', jsonb_build_array(t
 check "a vector whose chunk size was never recorded asks for one rebuild, not a guess" \
   "select (select c->>'state' from jsonb_array_elements(platform.health()->'checks') c where c->>'check'='chunk size') || ':' || (select count(*) from jsonb_array_elements(platform.health()->'decide') d where d->>'call' like '%recording the chunk size%')::text" "attention:1"
 q "truncate platform.embeddings; delete from platform.embedder" >/dev/null
+# The noticeboard (DECISIONS 26). Nothing here is notified: the value is that the note stays
+# up, and that an answer which was not already in the store becomes one.
+check "a question too short to answer is refused" \
+  "select coalesce((select 'posted' from (select public.skillhub_ask('agent_01','where is it')) z), '')" "ERROR:  Ask enough that a colleague can answer without asking you back: what you need, and what you already looked at."
+check "a question addressed to nobody in particular is posted, with what the store already holds" \
+  "select (public.skillhub_ask('agent_01','Does anyone know which column of the ticket export holds the real hours, and what 999 means there?') ? 'already_in_the_store')::text" "true"
+check "and addressing it to an agent that does not exist is refused" \
+  "select coalesce((select 'posted' from (select public.skillhub_ask('agent_01','A perfectly reasonable question addressed to nobody real at all','agent_99')) z), '')" "ERROR:  No agent \"agent_99\". skillhub_overview lists who is here; leave for_agent out to ask whoever knows."
+q "select public.skillhub_ask('agent_01','Where did the supplier audit register end up, and who loaded it?','agent_02')" >/dev/null
+check "the agent it was addressed to sees it, and nobody else does" \
+  "select jsonb_array_length(public.skillhub_overview('agent_02')->'questions'->'asked_of_you')::text || ':' || jsonb_array_length(public.skillhub_overview('agent_03')->'questions'->'asked_of_you')::text" "1:0"
+check "a question open to anyone is offered to a colleague, not to its author" \
+  "select jsonb_array_length(public.skillhub_overview('agent_03')->'questions'->'open_to_anyone')::text || ':' || jsonb_array_length(public.skillhub_overview('agent_01')->'questions'->'open_to_anyone')::text" "1:0"
+q "select public.skillhub_answer('agent_02', (select max(id) from platform.asks), 'It is in public.support_tickets; hours_spent 999 means the time was never recorded, so exclude it from sums.')" >/dev/null
+check "the answer reaches the asker, and the question is no longer open" \
+  "select (public.skillhub_overview('agent_01')->'questions'->'your_questions'->0->>'status') || ':' || (public.skillhub_overview('agent_01')->'questions'->'your_questions'->0->'answers'->0->>'from')" "answered:agent_02"
+check "answering tells you to write it down, which is the whole point" \
+  "select (public.skillhub_answer('agent_03', (select min(id) from platform.asks), 'Column hours_spent, and 999 is a sentinel for not recorded.')->>'next_step' like '%WRITE IT DOWN%')::text" "true"
+q "select public.skillhub_ask('agent_03','Has anybody worked out where the old audit spreadsheets are kept these days?')" >/dev/null
+check "health notices a question nobody has answered" \
+  "select ((platform.health()->'checks') @> '[{\"check\":\"questions on the board\"}]')::text" "true"
 check "retiring the note works too" \
   "select (public.skillhub_retire('agent_01','note',(select id::text from public.notes where title='Seed test'),'seed test cleanup') ? 'retired_by')::text" "true"
 

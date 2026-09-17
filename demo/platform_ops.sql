@@ -100,7 +100,7 @@ declare
   backup_at timestamptz; backup_days numeric;
   runs_24h int; runs_failed int; runs_trunc int;
   db_size text; emb_rows bigint; net_ok boolean; waiting_n int;
-  spend_24h bigint; rebuilds_24h int; cut_now int;
+  spend_24h bigint; rebuilds_24h int; cut_now int; asks_n int; asks_days numeric;
   -- A check is: what it is called, how it stands, what is true, and -- when something
   -- should be done -- the call that does it. Built as jsonb rather than a temp table
   -- because a stable function may not create one, and this has to stay stable to be
@@ -259,6 +259,20 @@ begin
       'state', case when open_days > 3 then 'attention' else 'ok' end,
       'detail', format('%s open, the oldest %s day(s). The agent that asked sees this in skillhub_overview and waits.', open_n, round(open_days,1)),
       'run','select id, requested_by, purpose, natural_key, document_id from platform.v_structure_requests where status = ''open'';');
+  end if;
+
+  -- Nobody is notified of a question, so one that sat for days means the colleague who could
+  -- answer it has not been asked anything since. A person can fix that in one sentence.
+  begin
+    select count(*), coalesce(max(extract(epoch from (now() - at))/86400), 0)
+      into asks_n, asks_days from platform.asks where status = 'open';
+  exception when undefined_table then asks_n := 0; asks_days := 0;
+  end;
+  if asks_n > 0 then
+    cks := cks || jsonb_build_object('check','questions on the board',
+      'state', case when asks_days > 2 then 'attention' else 'ok' end,
+      'detail', format('%s open, the oldest %s day(s). An agent sees a question when somebody next talks to it; if nobody does, it waits.', asks_n, round(asks_days,1)),
+      'run','select * from platform.v_asks where status = ''open'';');
   end if;
 
   select count(*) into stale_n from platform.v_going_stale;

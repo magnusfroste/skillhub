@@ -190,7 +190,11 @@ grant execute on all functions in schema platform to anon, authenticated, servic
 with n as (
   select platform.put_section(skill_md,
            E'\n## House standards',
-           array[]::text[],
+           -- Every section that can follow this one. A file whose list is short replaces to
+           -- the END of the skill and wipes whatever came after: this list was empty when
+           -- platform_asks.sql added a section below, so every boot deleted the new section
+           -- here and re-added it there -- two writes to the change log, for nothing.
+           array[E'\n## Asking each other'],
            E'\n## House standards\n\n'
            || E'Skills tagged `house-standard` describe how a particular kind of work is done here.\n'
            || E'Find them with:\n'
@@ -205,7 +209,7 @@ with n as (
            || E'`house-standard`, and add it to the list above. That is how the store learns.\n') as md
     from public.skill_library where slug = 'store-conventions')
 update public.skill_library s
-   set skill_md = n.md, version = '2.2.0', updated_at = now()
+   set skill_md = n.md, version = '2.3.0', updated_at = now()
   from n
  where s.slug = 'store-conventions'
-   and (s.skill_md is distinct from n.md or s.version is distinct from '2.2.0');
+   and (s.skill_md is distinct from n.md or s.version is distinct from '2.3.0');

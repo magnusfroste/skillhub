@@ -9,7 +9,7 @@ this order the first time; run the ones that apply after any change.
 | 0 | Will search by meaning work against your embedder? | `utils/check-embedder.sh` | No — before you install anything |
 | 1 | Does this repository build a working store from nothing? | `utils/test-seed-on-empty-db.sh` | No — a throwaway database |
 | 2 | Is what is running what is committed? | `docker logs supabase-seed` + `utils/check-deployed-drift.sh` | Read-only |
-| 3 | Do the fifteen chat tools answer through the gateway? | `utils/smoke-test-tools.sh` | Writes, then retires what it wrote |
+| 3 | Do the chat tools answer through the gateway? | `utils/smoke-test-tools.sh` | Writes, then retires what it wrote |
 | 4 | Does the server speak the current MCP revision, and the legacy one? | `utils/test-mcp-protocol.py` | Read-only |
 | 5 | Does a real client adopt the current revision? | `utils/probe-mcp-era.py` | Read-only, run inside a client |
 
@@ -109,7 +109,7 @@ Deploy away from silently reopening it.
 sh utils/smoke-test-tools.sh https://<store>/skillhub <MCP_KEY_NN>
 ```
 
-Calls the fifteen chat tools as that agent (the two file tools need a file; see below), through Kong, exactly as a client would. The nine
+Calls the chat tools as that agent (the two file tools need a file; see below), through Kong, exactly as a client would. The nine
 reading tools must answer; the writing tools write a note, a skill, a document record and a
 structure request, and the test then **retires** the first three — that is the retire test,
 and it also means the run leaves nothing behind that search will find.

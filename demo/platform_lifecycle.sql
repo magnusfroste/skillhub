@@ -345,7 +345,7 @@ with n as (
            || E'rather than guessing from the filename.\n') as md
     from public.skill_library where slug = 'store-conventions')
 update public.skill_library s
-   set skill_md = n.md, version = '2.2.0', updated_at = now()
+   set skill_md = n.md, version = '2.3.0', updated_at = now()
   from n
  where s.slug = 'store-conventions'
-   and (s.skill_md is distinct from n.md or s.version is distinct from '2.2.0');
+   and (s.skill_md is distinct from n.md or s.version is distinct from '2.3.0');

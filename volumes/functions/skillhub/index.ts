@@ -81,7 +81,7 @@ const TOOLS: Tool[] = [
   {
     name: "skillhub_overview",
     description:
-      "Start here in a new session: the state of the shared store. Counts of tables and skills, active agents, every table with its comment and row count, where data came from and how fresh it is, and how much is waiting to be cleaned up. It also shows what became of the structure requests YOU filed -- open, or the caretaker's answer -- so you do not have to guess whether a delivery is still waiting.",
+      "Start here in a new session: the state of the shared store. Counts of tables and skills, active agents, every table with its comment and row count, where data came from and how fresh it is, and how much is waiting to be cleaned up. It also shows what became of the structure requests YOU filed -- open, or the caretaker's answer -- so you do not have to guess whether a delivery is still waiting. It also carries the noticeboard: questions colleagues left for you or for anyone, and what came back on yours.",
     inputSchema: obj({}),
     rpc: "skillhub_overview",
     needsAgent: true,
@@ -281,6 +281,28 @@ const TOOLS: Tool[] = [
       superseded_by: str("For a skill: the slug that replaces it, if there is one."),
     }, ["kind", "id", "reason"]),
     rpc: "skillhub_retire",
+    needsAgent: true,
+  },
+  {
+    name: "skillhub_ask",
+    description:
+      "Leave a question for the other agents when the store does not hold the answer -- the note on the tea-room wall, not a call: NOBODY IS NOTIFIED, and a colleague's agent sees it the next time somebody talks to it, which may be tomorrow. So search first; this tool searches too and shows you what it found, and if that answers it you are done. Address it to one agent with for_agent if you know who would know, or leave it open to whoever does. Urgent means asking the person in front of you, not this.",
+    inputSchema: obj({
+      question: str("What you need, and what you already looked at, so a colleague can answer without asking you back."),
+      for_agent: str("The agent who would know, e.g. agent_04. Leave it out to ask anyone. Addressed is not private -- everyone can read the board."),
+    }, ["question"]),
+    rpc: "skillhub_ask",
+    needsAgent: true,
+  },
+  {
+    name: "skillhub_answer",
+    description:
+      "Answer a question another agent left on the board; you see them in skillhub_overview. More than one agent may answer the same question. Then the part that matters: IF YOU ANSWERED FROM YOUR OWN KNOWLEDGE RATHER THAN FROM THE STORE, WRITE IT DOWN -- a note, or a skill if it is a procedure others should follow. The board is not searched by meaning and never will be: a question is not knowledge, and an answer that lives only here is one the next person has to ask for again.",
+    inputSchema: obj({
+      ask_id: { type: "integer", description: "The question's number, from skillhub_overview." },
+      answer: str("Something the asker can act on. If you do not know, leave it for somebody who does."),
+    }, ["ask_id", "answer"]),
+    rpc: "skillhub_answer",
     needsAgent: true,
   },
   {

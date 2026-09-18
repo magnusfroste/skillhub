@@ -228,6 +228,21 @@ check "what the index cost is remembered too" \
 check "a run is remembered, so flapping is answerable" \
   "select count(*)::text || ':' || (platform.health()->'checks' @> '[{\"check\":\"indexing, last 24h\"}]')::text from platform.index_runs" "1:true"
 q "select public.backup_record('content','/root/.skillhub-backups/probe',1024,'written by the empty-database test')" >/dev/null
+q "select platform.set_retention('disposable','a throwaway probe database, rebuilt from the repository on every test run')" >/dev/null
+# A store that nobody keeps should not be asked for backups: a check that fires on a decision
+# somebody made on purpose is how a person learns to stop reading the list.
+check "a disposable store is not asked for a backup, and says why" \
+  "select (select c->>'state' from jsonb_array_elements(platform.health()->'checks') c where c->>'check'='backup') || ':' || (select (c->>'detail') like '%declared disposable%rebuilt from the repository%' from jsonb_array_elements(platform.health()->'checks') c where c->>'check'='backup')::text" "ok:true"
+check "and a reason is required to declare it" \
+  "select coalesce((select 'set' from (select platform.set_retention('disposable','no')) z), '')" "ERROR:  Say why, in a sentence. Somebody will read this the day they look for a backup that was never taken."
+# Separate statements: platform.health() is STABLE and reads the snapshot its statement began
+# with, so a declaration changed in the same SELECT is not visible to it -- the same trap the
+# register_document and overview checks hit.
+check "declaring it kept answers in words" \
+  "select (platform.set_retention('kept','this probe instance is kept so the test can see the question return') like 'This store is declared kept%')::text" "true"
+check "and the sentence about nobody expecting a backup is gone" \
+  "select (select (c->>'detail') like '%declared disposable%' from jsonb_array_elements(platform.health()->'checks') c where c->>'check'='backup')::text" "false"
+q "delete from platform.retention" >/dev/null
 check "a recorded backup turns that check green" \
   "select c->>'state' from jsonb_array_elements(platform.health()->'checks') c where c->>'check'='backup'" "ok"
 # Boots are not activity. The seed re-applies the house on every boot; until 2026-09-16 each

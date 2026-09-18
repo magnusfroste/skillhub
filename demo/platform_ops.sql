@@ -81,6 +81,44 @@ group by 1 order by 1 desc;
 comment on view platform.v_embedding_spend is 'Tokens the embedding endpoint charged for, by day, as it reported them. Seven days, like the runs it reads.';
 
 -- ---------------------------------------------------------------------------
+-- Is this store KEPT, or is it a test instance that gets rebuilt from the repository?
+--
+-- Nothing could say, so the backup check asked every instance for a backup -- including a
+-- demo that is meant to be thrown away. A check that fires on something somebody decided on
+-- purpose is how a person learns to stop reading the list, which is the failure this whole
+-- surface exists to prevent. So it is declared, deliberately, with a reason, the way a
+-- rebuild is: the store does not guess.
+create table if not exists platform.retention (
+  id     int primary key default 1 check (id = 1),
+  policy text not null check (policy in ('kept', 'disposable')),
+  reason text not null,
+  at     timestamptz not null default now(),
+  by     text not null default 'service_role'
+);
+comment on table platform.retention is 'Whether this instance is kept or is a test one that gets rebuilt from the repository. One row. Read by platform.health(), which stops asking for backups on a disposable store.';
+
+create or replace function platform.set_retention(policy text, reason text, by_agent text default 'service_role')
+returns text language plpgsql security definer set search_path = platform, public as $$
+begin
+  if policy not in ('kept','disposable') then
+    raise exception 'A store is either ''kept'' or ''disposable''; got "%".', policy;
+  end if;
+  if reason is null or length(btrim(reason)) < 10 then
+    raise exception 'Say why, in a sentence. Somebody will read this the day they look for a backup that was never taken.';
+  end if;
+  insert into platform.retention as r (id, policy, reason, by)
+  values (1, set_retention.policy, btrim(set_retention.reason), by_agent)
+  on conflict (id) do update
+     set policy = excluded.policy, reason = excluded.reason, at = now(), by = excluded.by;
+  return case policy
+    when 'disposable' then format('This store is declared disposable: %s. health stops asking for backups; nothing else changes, and nothing is deleted.', btrim(reason))
+    else format('This store is declared kept: %s. health asks for a backup, and says so when the last one is more than two days old.', btrim(reason)) end;
+end $$;
+comment on function platform.set_retention(text, text, text) is 'Declare whether this instance is kept or disposable, with a reason. A disposable store is not asked for backups. Nothing else about it changes.';
+revoke execute on function platform.set_retention(text, text, text) from public, anon, authenticated;
+grant execute on function platform.set_retention(text, text, text) to service_role, postgres;
+
+-- ---------------------------------------------------------------------------
 -- 3) The one call.
 --
 -- Three states, and the difference matters: BROKEN is something a person has to act on now
@@ -101,6 +139,7 @@ declare
   runs_24h int; runs_failed int; runs_trunc int;
   db_size text; emb_rows bigint; net_ok boolean; waiting_n int;
   spend_24h bigint; rebuilds_24h int; cut_now int; asks_n int; asks_days numeric;
+  keep_policy text; keep_reason text;
   -- A check is: what it is called, how it stands, what is true, and -- when something
   -- should be done -- the call that does it. Built as jsonb rather than a temp table
   -- because a stable function may not create one, and this has to stay stable to be
@@ -284,10 +323,20 @@ begin
       'run','select * from platform.v_action_items;');
   end if;
 
-  -- The question asked after an incident, which needs its answer written before one.
+  -- The question asked after an incident, which needs its answer written before one -- unless
+  -- somebody has said in writing that this store is not kept.
+  begin
+    select policy, reason into keep_policy, keep_reason from platform.retention where id = 1;
+  exception when undefined_table then keep_policy := null;
+  end;
   select max(at) into backup_at from platform.backups;
   backup_days := extract(epoch from (now() - backup_at))/86400;
-  if backup_at is null then
+  if keep_policy = 'disposable' then
+    cks := cks || jsonb_build_object('check','backup','state','ok',
+      'detail', format('Not taken, and not expected: this store is declared disposable -- %s. Declared %s. Change it with platform.set_retention(''kept'', ''why'').',
+                       keep_reason, (select at::timestamp(0) from platform.retention where id = 1)),
+      'run', null);
+  elsif backup_at is null then
     cks := cks || jsonb_build_object('check','backup','state','attention',
       'detail','No backup has ever been recorded. The repository rebuilds the house; it cannot rebuild what agents and people put in it.',
       'run','sh utils/backup-content.sh   -- then put it in cron; the caretaker-operations skill has the line',
@@ -431,6 +480,14 @@ begin
 
     **2. Take a backup.** The repository rebuilds the house. It cannot rebuild what people
     and agents put in it, and some of it has no source left anywhere.
+
+    If this instance is a test one that gets rebuilt from the repository, say so once and the
+    question stops being asked:
+
+        select platform.set_retention('disposable', 'demo instance, rebuilt from the repository when needed');
+
+    Only on a store whose contents nobody would miss. `set_retention('kept', 'why')` puts it
+    back. Nothing else about the store changes either way.
 
         sh utils/backup-content.sh
 

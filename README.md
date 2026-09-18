@@ -17,7 +17,7 @@ One caretaker key can. Every write is logged under the identity the gateway veri
 | Layer | Where | Applied when |
 |---|---|---|
 | Gateway — Kong, key-auth, one consumer per `MCP_KEY_NN`, ACLs on two routes | `volumes/api/kong.yml` | container **creation** (recreate, never restart) |
-| MCP server — twenty tools, identity from the verified header; indexer | `volumes/functions/skillhub`, `volumes/functions/embed` | container start |
+| MCP server — twenty-one tools, identity from the verified header; indexer | `volumes/functions/skillhub`, `volumes/functions/embed` | container start |
 | The store — conventions, change log, placement rule, the tools' logic, views | `demo/*.sql`, applied by the `seed` service | **every boot**, idempotent |
 
 Upstream Supabase (`supabase/supabase` → `docker/`, pinned in `UPSTREAM`) with these changes:
@@ -61,7 +61,7 @@ Authentication is the header `apikey: <key>` — not `Authorization: Bearer`.
 
 | Door | Key | Behind it |
 |---|---|---|
-| `https://<domain>/skillhub` | any `MCP_KEY_NN` (consumer `agent_NN`), or the service key | the twenty tools; identity from the key |
+| `https://<domain>/skillhub` | any `MCP_KEY_NN` (consumer `agent_NN`), or the service key | the twenty-one tools; identity from the key |
 | `https://<domain>/mcp` | `SERVICE_ROLE_KEY` only (group `admin`) | Supabase's own MCP server: raw SQL as the administrator |
 
 An agent key on `/mcp` gets `403`. The server speaks MCP `2026-07-28` and the legacy
@@ -92,10 +92,11 @@ note — that is an administrator, one person's stated responsibility.
 | | |
 |---|---|
 | Find your way | `help` — plain text: what to do in order, and the finished procedures. `help('loading')` reads one, resolved the way `man` resolves a word |
-| Read | `overview`, `rules`, `search`, `similar`, `read` (a skill at any version, and it lists them), `query`, `activity`, `report`, `whoami` |
+| Read | `overview`, `rules`, `search`, `similar`, `read` (a skill at any version, and it lists them; a document whole or by pages), `query`, `activity`, `report`, `whoami` |
 | Write your own | `write_note`, `publish_skill` (after a search; a higher version supersedes, never overwrites), `add_rows` into an existing table, `register_document`, `retire` (marks, never deletes) |
 | Ask a colleague | `ask` leaves a question on the noticeboard (nobody is notified — an agent sees it when its next session starts), `answer` replies to one, and answering tells you to write the answer down as a note or skill when it was not already in the store |
 | Hand over a file of rows | `upload_url` (signed Storage URL, no key needed; the bytes never pass through the model) → `load_file` into an existing table on a natural key, or `request_structure` with `document_id`, `natural_key` and your `observations` — the caretaker builds the table with those as column comments and loads the file: `select platform.load_registered_file(<request_id>);` |
+| Hand over a document | `upload_url` gives two curl lines — the file, and its `pdftotext -layout` output — then `load_text`: the text is held verbatim with page numbers, searched by words and by meaning, a hit names the page, `read` gives it whole or by `pages`, and a quotation is the document's own words |
 
 Everything an agent reads at the start of a session comes from `skillhub_overview` and
 `skillhub_rules`, so a rule can be changed centrally without touching a device. `overview`
@@ -149,7 +150,7 @@ so the store stops asking. Seven days of indexing runs are in `platform.index_ru
 - **Invisible Unicode in a pasted variable name** makes Kong ignore it. Retype the name.
 - **A deploy that changes the tool list does not reach a running agent.** Hermes reads
   `tools/list` when its gateway starts and keeps it (the list is also advertised as cacheable
-  for an hour). The server answers twenty tools while the agent still sees an older count, and
+  for an hour). The server answers twenty-one tools while the agent still sees an older count, and
   it will tell you so. Restart the agent after such a deploy.
 
 ## Updating from upstream

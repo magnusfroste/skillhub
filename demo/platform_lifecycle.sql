@@ -140,6 +140,49 @@ comment on column public.documents.retired_reason is 'Why it stopped applying. R
 
 create index if not exists documents_sha_idx on public.documents (sha256);
 
+-- The TEXT of a document, when its owner loaded it (2026-09-18). Until now the catalogue knew
+-- a file's name, size and hash and nothing read inside it -- the largest difference from a
+-- document system, and the one an ISO 9001 auditor notices first: "show me what the manual
+-- says" was answered by an agent's condensation, never by the manual. The text is loaded
+-- server-side from Storage, verbatim, with page markers where the file had pages, so a hit
+-- can say "page 7" and a quotation is the document's own words. The condensed skill an agent
+-- publishes is still the curated layer on top; this is the source it condenses from.
+alter table public.documents
+  add column if not exists content           text,
+  add column if not exists pages             int,
+  add column if not exists content_loaded_at timestamptz;
+comment on column public.documents.content is 'The document''s text, verbatim, loaded from Storage by skillhub_load_text. Pages are marked "## Page N". Null until loaded; a registered file without it cannot be quoted.';
+comment on column public.documents.pages is 'How many pages the text has, when the source had pages (a PDF); 1 otherwise.';
+-- Keyword search over the text needs an index, or every search scans every document's full
+-- text. Generated and stored, so the tsvector follows the content by itself.
+do $tsv$
+begin
+  if not exists (select 1 from pg_attribute where attrelid = 'public.documents'::regclass and attname = 'content_tsv') then
+    alter table public.documents add column content_tsv tsvector
+      generated always as (to_tsvector('swedish', coalesce(content, ''))) stored;
+  end if;
+end $tsv$;
+create index if not exists documents_content_tsv_idx on public.documents using gin (content_tsv);
+
+-- Only the owner (or the caretaker) may attach text to a document, and it goes in whole.
+create or replace function public.document_set_content(p_id uuid, p_content text, p_pages int, p_agent text)
+returns jsonb language plpgsql security definer set search_path = public, platform as $$
+declare d public.documents%rowtype;
+begin
+  select * into d from public.documents where id = p_id;
+  if not found then raise exception 'No document %.', p_id; end if;
+  if d.owner <> p_agent and p_agent <> 'service_role' then
+    raise exception 'Document % belongs to %. Only its owner or the caretaker may load its text.', p_id, d.owner;
+  end if;
+  update public.documents
+     set content = p_content, pages = greatest(coalesce(p_pages, 1), 1), content_loaded_at = now(),
+         updated_by = p_agent, updated_at = now()
+   where id = p_id;
+  return jsonb_build_object('document_id', p_id, 'filename', d.filename, 'chars', length(p_content),
+                            'pages', greatest(coalesce(p_pages, 1), 1));
+end $$;
+comment on function public.document_set_content(uuid, text, int, text) is 'Attach the verbatim text of an uploaded document. Called by skillhub_load_text after it read the file from Storage; the owner or the caretaker only.';
+
 -- Search now knows about documents. Same ownership filter as the other sources: a
 -- private document belongs to its owner alone.
 create or replace function platform.search(phrase text, max_hits int default 10, agent text default null)
@@ -163,13 +206,20 @@ language sql stable as $$
     and n.retired_at is null
     and to_tsvector('swedish', coalesce(n.title,'')||' '||coalesce(n.content,'')) @@ q.tq
   union all
+  -- A document with its text loaded matches on the text, and the excerpt is the passage that
+  -- matched rather than the description -- which is what somebody quoting it needs.
   select 'document', d.id::text, d.filename,
-         left(coalesce(d.description,''), 180),
-         ts_rank(to_tsvector('swedish', coalesce(d.filename,'')||' '||coalesce(d.description,'')), q.tq)
+         case when d.content is not null and d.content_tsv @@ q.tq
+              -- No <b> markup: this excerpt goes into a JSON answer, not a web page.
+              then ts_headline('swedish', left(d.content, 30000), q.tq, 'MaxWords=35, MinWords=15, StartSel="", StopSel=""')
+              else left(coalesce(d.description,''), 180) end,
+         greatest(ts_rank(to_tsvector('swedish', coalesce(d.filename,'')||' '||coalesce(d.description,'')), q.tq),
+                  case when d.content is not null then ts_rank(d.content_tsv, q.tq) else 0 end)
   from public.documents d, q
   where (d.visibility = 'public' or d.owner = search.agent)
     and d.retired_at is null
-    and to_tsvector('swedish', coalesce(d.filename,'')||' '||coalesce(d.description,'')) @@ q.tq
+    and (to_tsvector('swedish', coalesce(d.filename,'')||' '||coalesce(d.description,'')) @@ q.tq
+         or (d.content is not null and d.content_tsv @@ q.tq))
   union all
   select 'table', c.relname, c.relname, left(coalesce(obj_description(c.oid),''), 180), 0.1::real
   from pg_class c join pg_namespace n on n.oid=c.relnamespace, q
@@ -197,9 +247,10 @@ select d.filename, d.bucket, coalesce(d.path,'(not uploaded)') as path,
        pg_size_pretty(coalesce(d.bytes,0)) as size, d.mime_type,
        d.owner as registered_by, d.visibility,
        d.created_at::timestamp(0) as registered,
-       (d.path is null) as content_missing
+       (d.path is null) as content_missing,
+       (d.content is not null) as has_text, d.pages
 from public.documents d order by d.created_at desc;
-comment on view platform.v_documents is 'The file catalogue. content_missing = the record exists but nobody uploaded the file, so its contents are not in the store and cannot be quoted.';
+comment on view platform.v_documents is 'The file catalogue. content_missing = nobody uploaded the file. has_text = its text was loaded with skillhub_load_text, so it can be searched and quoted by page.';
 
 -- ---------------------------------------------------------------------------
 -- 3) What is going stale: one list of everything that lost its currency.
@@ -335,8 +386,13 @@ select platform.put_conventions_section(20, 'lifecycle and files',
   || E'Files: NEVER put contents (base64) in a column. A file of ROWS -- a csv, an\n'
   || E'export -- is handed over, never retyped: skillhub_upload_url, run the curl line it\n'
   || E'gives, then skillhub_load_file into the table that holds that data, or\n'
-  || E'skillhub_request_structure with the document_id when no table does. Any other file:\n'
-  || E'register it with skillhub_register_document, and if you can read it, the content is\n'
-  || E'your job -- the catalogue keeps name, bytes and sha256, and nothing reads inside a file.\n'
-  || E'If you are asked what a document says and its content is not in the store, say so\n'
-  || E'rather than guessing from the filename.\n');
+  || E'skillhub_request_structure with the document_id when no table does.\n\n'
+  || E'A DOCUMENT people will ask about -- a manual, a policy, a report: upload it the same\n'
+  || E'way, run pdftotext -layout on it and upload that text too (the curl line is in the\n'
+  || E'same answer), then skillhub_load_text(document_id). The store then holds the text\n'
+  || E'verbatim with page numbers: it is searched by words and by meaning, a hit says which\n'
+  || E'page, and a quotation is the document''s own words. A skill you publish from it is the\n'
+  || E'condensed layer; the loaded text is what it was condensed from.\n\n'
+  || E'Only skillhub_register_document, with no upload: a pointer -- name, bytes, sha256 --\n'
+  || E'and nothing reads inside it. If you are asked what such a document says, say that its\n'
+  || E'text is not in the store rather than guessing from the filename.\n');

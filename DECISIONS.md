@@ -776,6 +776,41 @@ not by substring: *loading*, *csv* and *xlsx* all reach the loading standard, *a
 do. `loading` is not a substring of `load-from-source-system`, which is precisely the kind of
 detail that decides whether somebody types it twice or never again.
 
+## 29. The document's own words
+
+Until 2026-09-18 the catalogue knew a file's name, size and hash, and nothing read inside it.
+Every question about a manual was answered by an agent's condensation of it — a good one,
+after §16, with the clause numbers kept and no invented quotation marks — but never by the
+manual. In a regulated shop that is the wrong way round: the auditor opens the document, and
+what the store could show was somebody's reading of it.
+
+The store does not parse PDFs. The agent's machine does, with `pdftotext`, which the Hermes
+image now carries — a born-digital PDF becomes text in tens of milliseconds, and the day an
+agent spent minutes on OCR for one was the day that decided this. `skillhub_upload_url` gives
+two curl lines instead of one: the file, and its text beside it. `skillhub_load_text` then
+reads the text from Storage server-side, keeps the page breaks as page markers, and stores it
+verbatim. No page passes through the model on the way in, for the reason no row does in §20.
+
+From there the existing machinery does the rest. The text is indexed by keyword with a
+generated tsvector, and the excerpt of a hit is the passage that matched rather than the
+description. It is chunked and embedded like a long note, with the page markers as headings,
+so a hit from `skillhub_similar` names the page — and a chunk cut from the middle of a long
+page carries the page forward as *continued*, or half of every page would have been
+uncitable. `skillhub_read` gives the text whole when it is short and by `pages` when it is
+not; a 300-page manual is not something to hand a model in one piece, and a citation is a
+page anyway.
+
+Measured on a ten-page quality manual: 25,339 characters loaded, 14 chunks, a search for
+supplier surveillance answered with the manual's own sentence as the excerpt, a Swedish
+question answered with page 8, pages 7–8 returned verbatim on request.
+
+What did **not** change is the placement rule's shape. `skillhub_register_document` alone is
+still a pointer — name, bytes, hash — and still shares nothing of what the file says; the
+rule now says so in those words instead of claiming that nothing ever reads inside a file.
+And the condensed skill an agent publishes from a document is still the curated layer. The
+loaded text is what it was condensed from, which is exactly what the skill lacked: something
+to be checked against.
+
 ---
 
 ## What this does not do yet
@@ -794,10 +829,6 @@ and leaves two rows. Traceable by design, and worth waiting to see whether it ge
 promoted columns with the reading rules in the comments — is what runs today and works. The
 next real export decides it, on one question: which version makes it easier to find out how
 the data has to be read?
-
-**Document contents.** The catalogue knows a file's name, size and hash; nothing reads inside
-it. This is the largest remaining difference from a document management system, and it is a
-content decision with a real cost rather than an architectural one.
 
 **A token per agent.** Then §14 stops being decorative.
 

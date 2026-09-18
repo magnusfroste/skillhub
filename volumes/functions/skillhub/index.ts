@@ -123,6 +123,7 @@ const TOOLS: Tool[] = [
         kind: str("skill, note, document or table"),
         id: str("Slug for a skill, uuid for a note or document, table name for a table"),
         version: str("A skill only: read this version instead of the current one, e.g. 1.0.0. The response always lists the versions that exist."),
+        pages: str("A document only: a page or a range, e.g. 7 or 7-9. Without it a short text comes whole and a long one comes as its first 60,000 characters with the page count."),
       },
       ["kind", "id"],
     ),
@@ -240,7 +241,7 @@ const TOOLS: Tool[] = [
       // content, and on 2026-09-13 an agent holding a quality manual it could read perfectly
       // registered the file, reported that a person had to upload it, and stopped -- three
       // times, once after the user said they could not upload anything.
-      "Catalogue a file -- and then put its CONTENT in yourself, because registering it shares nothing. Nothing here reads inside a file and no later step will, so a registered document is findable by name and cannot answer one question about what it says. Publish each rule or procedure it contains as a skill, keeping the document's own clause and section numbers and naming the file and revision as the source. Never put file content as base64 in a table. Warns if the checksum is already registered.",
+      "Catalogue a file that lives somewhere else, as a pointer: name, bytes, sha256. Registering shares nothing of what it SAYS -- such a document is findable by name and cannot answer one question about its contents. To have the store hold the text, use skillhub_upload_url and skillhub_load_text instead. Otherwise the content is your job: Publish each rule or procedure it contains as a skill, keeping the document's own clause and section numbers and naming the file and revision as the source. Never put file content as base64 in a table. Warns if the checksum is already registered.",
     inputSchema: obj(
       {
         filename: str("File name"),
@@ -256,9 +257,19 @@ const TOOLS: Tool[] = [
     needsAgent: true,
   },
   {
+    name: "skillhub_load_text",
+    description:
+      "After uploading a document and its pdftotext output with the two curl lines from skillhub_upload_url: reads the text from Storage server-side, keeps the page breaks as page numbers, and stores it verbatim -- no page passes through you. From then on the document is searched by words and by meaning, a hit names the page, skillhub_read gives it whole or by pages, and a quotation is the document's own words. A .txt, .md or .csv needs no sidecar; its own contents are loaded. Owner or caretaker only.",
+    inputSchema: obj({
+      document_id: str("The id skillhub_upload_url returned, after both uploads finished."),
+    }, ["document_id"]),
+    rpc: "__load_text__",
+    needsAgent: true,
+  },
+  {
     name: "skillhub_upload_url",
     description:
-      "Hand a FILE of rows to the store without retyping them: registers the file and returns a one-time upload URL plus the exact curl line. Upload the bytes with that line (the file goes beside the model, not through it), then either skillhub_load_file into a table that already exists, or skillhub_request_structure with document_id, natural_key and your observations so the caretaker builds the table and loads the file. CSV today; save a spreadsheet as CSV first. Never paste rows into a chat or a tool argument -- sixty rows that way took 36 calls and stopped at 19.",
+      "Hand a FILE to the store without retyping it: registers the file and returns one-time upload URLs plus the exact curl lines. The file goes beside the model, not through it. A file of ROWS (CSV; save a spreadsheet as CSV first): upload it, then skillhub_load_file into a table that exists, or skillhub_request_structure with document_id, natural_key and observations. A DOCUMENT people will ask about (a manual, a policy, a report): upload it, run pdftotext -layout on it and upload that text with the second curl line, then skillhub_load_text -- the store then holds the text verbatim, searchable, quotable by page. Never paste contents into a chat or a tool argument -- sixty rows that way took 36 calls and stopped at 19.",
     inputSchema: obj({
       filename: str("The file's name, e.g. tickets_export_2026-09.csv"),
       sha256: str("sha256 of the file (sha256sum <file>). Names the upload path and lets the store spot the same file delivered twice."),
@@ -539,11 +550,20 @@ async function handle(body: any, agent: string): Promise<unknown | null> {
           }, null, 2) }] });
         }
         const url = await signedUploadUrl(path);
+        // A second URL, for the file's TEXT: pdftotext -layout output beside a PDF, so the
+        // store can hold what the document says without parsing PDFs itself and without a
+        // single page passing through the model. A text file needs no sidecar.
+        const isText = /\.(txt|md|csv|json)$/i.test(filename);
+        const textUrl = isText ? null : await signedUploadUrl(`${path}.txt`);
+        const mime = /\.csv$/i.test(filename) ? "text/csv" : /\.pdf$/i.test(filename) ? "application/pdf" : "application/octet-stream";
         return rpcOk(id, { content: [{ type: "text", text: JSON.stringify({
           document_id: reg.id, path, already_uploaded: false, duplicate_of: reg.duplicate_of ?? null,
-          upload_with: `curl -sS -X PUT -H 'content-type: text/csv' --upload-file '<the file>' '${url}'`,
-          then: "Run that from your shell; no API key is needed, the URL carries its own. When it returns, either skillhub_load_file(document_id, target_table, natural_key) into a table that exists, or skillhub_request_structure with document_id, natural_key and your observations so the caretaker builds the table and loads it.",
-          note: "The URL is single-use and expires. The file goes straight to the store; nothing in it passes through you.",
+          upload_with: `curl -sS -X PUT -H 'content-type: ${mime}' --upload-file '<the file>' '${url}'`,
+          ...(textUrl ? { upload_text_with: `pdftotext -layout '<the file>' '<the file>.txt' && curl -sS -X PUT -H 'content-type: text/plain' --upload-file '<the file>.txt' '${textUrl}'` } : {}),
+          then: isText
+            ? "Run that from your shell; no API key is needed, the URL carries its own. Then: rows -> skillhub_load_file(document_id, target_table, natural_key) or skillhub_request_structure; a text document -> skillhub_load_text(document_id) so it is searchable and quotable."
+            : "Run both lines from your shell; no API key is needed, the URLs carry their own. Then skillhub_load_text(document_id): the store reads the text server-side, keeps the page numbers, and it becomes searchable by words and by meaning within seconds. Skip the second line only for a file nobody will ask the contents of.",
+          note: "The URLs are single-use and expire. The file goes straight to the store; nothing in it passes through you.",
         }, null, 2) }] });
       }
       if (tool.rpc === "__load_file__") {
@@ -561,6 +581,31 @@ async function handle(body: any, agent: string): Promise<unknown | null> {
           table: args.target_table, natural_key: args.natural_key, file: filename, rows_in_file: rows.length,
           inserted, updated, slices, delivery_registered: true,
           note: "Read skillhub_read kind=table for the column comments before you analyse: that is where the reading rules live.",
+        }, null, 2) }] });
+      }
+      if (tool.rpc === "__load_text__") {
+        const { path, filename } = await documentPath(String(args.document_id ?? ""));
+        const isText = /\.(txt|md|csv|json)$/i.test(filename);
+        let raw: string;
+        try { raw = await downloadObject(isText ? path : `${path}.txt`); }
+        catch (e) {
+          if (isText) throw e;
+          throw new Error(`No text has been uploaded for ${filename}. Run: pdftotext -layout '${filename}' '${filename}.txt' and upload it with the upload_text_with line from skillhub_upload_url, then try again.`);
+        }
+        // pdftotext separates pages with form feeds. They become headings, so the chunker's
+        // pointer and a citation can both say "page 7".
+        const pagesArr = raw.replace(/\r\n/g, "\n").split("\f").map((t) => t.replace(/\s+$/g, ""));
+        while (pagesArr.length > 1 && pagesArr[pagesArr.length - 1].trim() === "") pagesArr.pop();
+        const content = pagesArr.length > 1
+          ? pagesArr.map((t, i) => (i === 0 ? t : `\n## Page ${i + 1}\n${t}`)).join("\n")
+          : pagesArr[0];
+        if (!content.trim()) throw new Error(`The text file for ${filename} is empty. A scanned PDF has no text layer; that needs OCR before it can be loaded.`);
+        const saved = await callRpc("document_set_content", {
+          p_id: args.document_id, p_content: content, p_pages: pagesArr.length, p_agent: agent,
+        }) as any;
+        return rpcOk(id, { content: [{ type: "text", text: JSON.stringify({
+          ...saved,
+          note: "Loaded verbatim. It is findable by words now and by meaning within seconds; a hit names the page, and skillhub_read gives it whole or by pages. If it holds rules people follow, publish the reading of it as a skill that names this document and its revision -- the loaded text is what an auditor opens.",
         }, null, 2) }] });
       }
       if (tool.rpc === "__semantic__") {

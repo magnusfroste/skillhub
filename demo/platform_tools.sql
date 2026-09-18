@@ -112,9 +112,10 @@ $$;
 -- rule say last week" was a question only the caretaker could answer, with SQL. In a
 -- regulated shop that is the question an auditor asks first.
 drop function if exists public.skillhub_read(text, text, text);
-create or replace function public.skillhub_read(kind text, id text, agent text default null, version text default null)
+drop function if exists public.skillhub_read(text, text, text, text);
+create or replace function public.skillhub_read(kind text, id text, agent text default null, version text default null, pages text default null)
 returns jsonb language plpgsql stable security definer set search_path = public, platform as $$
-declare j jsonb;
+declare j jsonb; pg_from int; pg_to int; pg_all text[]; body text; total_pages int;
 begin
   if kind = 'skill' then
     select to_jsonb(x) into j from (
@@ -158,10 +159,39 @@ begin
     select to_jsonb(x) into j from (
       select 'document' as kind, d.id::text, d.filename, d.description,
              d.mime_type, d.bytes, d.sha256, d.bucket, d.path,
-             d.source, (d.path is null) as content_missing, d.owner
+             d.source, (d.path is null) as content_missing, d.owner,
+             (d.content is null) as text_missing, d.pages, length(d.content) as chars,
+             d.content_loaded_at::timestamp(0) as text_loaded
       from public.documents d
       where d.id::text = skillhub_read.id
         and (d.visibility = 'public' or d.owner = skillhub_read.agent)) x;
+    -- The text, when loaded: whole if it is short, otherwise by pages -- a 300-page manual
+    -- is not something to hand a model in one piece, and a citation is a page anyway.
+    if j is not null and (j->>'text_missing') = 'false' then
+      select d.content into body from public.documents d where d.id::text = skillhub_read.id;
+      pg_all := regexp_split_to_array(body, E'\n## Page \\d+\n');
+      total_pages := coalesce(array_length(pg_all, 1), 1);
+      if skillhub_read.pages is not null then
+        pg_from := (regexp_match(skillhub_read.pages, '^\s*(\d+)'))[1]::int;
+        pg_to := coalesce((regexp_match(skillhub_read.pages, '-\s*(\d+)\s*$'))[1]::int, pg_from);
+        if pg_from is null or pg_from < 1 or pg_from > total_pages then
+          raise exception 'Pages are 1 to % for this document; "%" is outside that.', total_pages, skillhub_read.pages;
+        end if;
+        pg_to := least(pg_to, total_pages);
+        j := j || jsonb_build_object('pages_returned', format('%s-%s of %s', pg_from, pg_to, total_pages),
+               'content', (select string_agg(format(E'## Page %s\n%s', n, pg_all[n]), E'\n')
+                             from generate_series(pg_from, pg_to) n));
+      elsif length(body) <= 60000 then
+        j := j || jsonb_build_object('content', body);
+      else
+        j := j || jsonb_build_object('content', left(body, 60000),
+               'note', format('The text is %s characters over %s pages; this is the first 60,000. Read the rest by page: pages="7-9". A hit from skillhub_similar names the page.', length(body), total_pages));
+      end if;
+    elsif j is not null and (j->>'text_missing') = 'true' then
+      j := j || jsonb_build_object('note', case when (j->>'content_missing') = 'true'
+        then 'Registered but never uploaded: a pointer to a file that lives somewhere else. Its text is not in the store and cannot be quoted from here.'
+        else 'Uploaded, but its text has not been loaded. The owner can: pdftotext -layout on the file, upload that with the second curl line skillhub_upload_url gives, then skillhub_load_text.' end);
+    end if;
   elsif kind = 'table' then
     select jsonb_build_object(
       'kind', 'table', 'id', skillhub_read.id,

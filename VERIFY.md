@@ -205,6 +205,17 @@ truncate platform.embeddings;      -- 1. first, while the old model is still con
 Between 1 and 3 keyword search is unaffected and search by meaning finds nothing. The other
 order trades those few minutes for an error on every query.
 
+## 5d. A document's own words
+
+Give an agent a PDF and the same words as before. It should now upload the file **and** its
+`pdftotext -layout` output with the two curl lines `skillhub_upload_url` gives, then
+`skillhub_load_text`. Within seconds `skillhub_search` finds a phrase from a late page with
+that passage as the excerpt, `skillhub_similar` names the page in `matched`, and
+`skillhub_read(kind=document, pages="7-8")` returns those pages verbatim. Measured on a
+ten-page quality manual: 25,339 characters loaded, 14 chunks headed by page, a Swedish
+question about supplier audits answered with page 8. The condensed skill the agent publishes
+is still the curated layer; this is what it was condensed from, and what an auditor opens.
+
 ## 6. Ask an agent something you know the answer to
 
 Scripts prove the mechanism. Only an agent proves the store is usable, and the useful test is

@@ -35,7 +35,7 @@ declare
   budget int := greatest(coalesce(max_chars, 6000) - length(t) - 1, 200);
   units text[] := '{}';
   sec text; para text; piece text; u text;
-  cur text := ''; n int := 0;
+  cur text := ''; n int := 0; last_heading text;
 begin
   for sec in select x from regexp_split_to_table(coalesce(body, ''), E'(?n)(?=^#{1,6} )') x loop
     if btrim(sec) = '' then continue; end if;
@@ -59,15 +59,26 @@ begin
   if coalesce(array_length(units, 1), 0) = 0 then
     chunk := 0; head := left(t, 80); content := t; return next; return;
   end if;
+  -- A chunk cut from the middle of a long section has no heading of its own, and its
+  -- pointer then read as the first line of a paragraph -- on a manual, a page's second
+  -- half could not say which page it was. So the last heading seen is carried forward,
+  -- marked as continued, and every piece of a document stays citable.
   foreach u in array units loop
     if cur <> '' and length(cur) + 2 + length(u) > budget then
-      chunk := n; head := platform.chunk_head(cur); content := t || E'\n' || cur;
+      chunk := n; head := platform.chunk_head(cur);
+      if cur !~ E'(^|\n)#{1,6} ' and last_heading is not null then head := left(last_heading, 100) || ' (continued)'; end if;
+      content := t || E'\n' || cur;
       return next; n := n + 1; cur := '';
+    end if;
+    if u ~ E'(^|\n)#{1,6} ' then
+      last_heading := (select l from regexp_split_to_table(u, E'\n') with ordinality as x(l, o) where l ~ '^#{1,6} ' order by o desc limit 1);
     end if;
     cur := case when cur = '' then u else cur || E'\n\n' || u end;
   end loop;
   if cur <> '' then
-    chunk := n; head := platform.chunk_head(cur); content := t || E'\n' || cur;
+    chunk := n; head := platform.chunk_head(cur);
+    if cur !~ E'(^|\n)#{1,6} ' and last_heading is not null then head := left(last_heading, 100) || ' (continued)'; end if;
+    content := t || E'\n' || cur;
     return next;
   end if;
 end $$;
@@ -101,13 +112,16 @@ begin
                       where e.source='note' and e.id=n.id::text and e.chunk = 0
                         and e.text_hash = md5(coalesce(n.title,'')||coalesce(n.content,'')))
     union all
-    select 'document', d.id::text, coalesce(d.filename,''), coalesce(d.description,''),
-           md5(coalesce(d.filename,'')||coalesce(d.description,''))
+    -- With its text when loaded: the page markers are headings, so a chunk's pointer reads
+    -- "## Page 7 ... ## Page 9" and a hit can be cited. Without it, name and description.
+    select 'document', d.id::text, coalesce(d.filename,''),
+           coalesce(d.description,'') || case when d.content is not null then E'\n\n' || left(d.content, 400000) else '' end,
+           md5(coalesce(d.filename,'')||coalesce(d.description,'')||coalesce(d.content,''))
     from public.documents d
     where d.visibility = 'public' and d.retired_at is null
       and not exists (select 1 from platform.embeddings e
                       where e.source='document' and e.id=d.id::text and e.chunk = 0
-                        and e.text_hash = md5(coalesce(d.filename,'')||coalesce(d.description,'')))
+                        and e.text_hash = md5(coalesce(d.filename,'')||coalesce(d.description,'')||coalesce(d.content,'')))
     union all
     -- Schema comments. Measured 2026-09-12: the rule that a column carries sentinel values
     -- lived in its comment, and a Swedish question could not reach an English comment --
@@ -135,7 +149,7 @@ begin
   from objects o cross join lateral platform.chunk_text(o.title, o.body, max_chars) c;
   return j;
 end $$;
-comment on function public.embed_candidates(int, int) is 'Chunks of objects without a current embedding, max_rows OBJECTS at a time, cut to max_chars. text_hash is the whole object''s, so changed text is embedded again. A document is indexed on its filename and description only -- the contents are not in the store.';
+comment on function public.embed_candidates(int, int) is 'Chunks of objects without a current embedding, max_rows OBJECTS at a time, cut to max_chars. text_hash is the whole object''s, so changed text is embedded again. A document is indexed on its filename and description, and on its text once skillhub_load_text has loaded it.';
 
 -- Save a vector. jsonb in, vector out, so the edge function never has to know pgvector's
 -- wire format. The parameters are prefixed p_ because "source" alone is ambiguous between

@@ -74,6 +74,7 @@ check "the index-on-write trigger is installed" \
 # live in the edge function (they talk to Storage), and skillhub_load_rows is SQL with no
 # tool of its own -- the loader calls it. Counting SQL, not tools, is what this database
 # receipt can verify.
+# skillhub_load_text, like upload_url and load_file, lives in the MCP server: twenty here.
 check "the twenty skillhub_ functions exist" \
   "select count(distinct proname) from pg_proc where proname like 'skillhub\\_%'" "20"
 check "rules are readable" \
@@ -130,6 +131,8 @@ check "the loading house standard is at 1.1.0 and the agent path" \
 # asking about section 7.3 to the heading the chunk began at, 3.4 (2026-09-17).
 check "the pointer names the range of headings a chunk covers" \
   "select head from platform.chunk_text('T', '## One'||E'\n'||repeat('a ',300)||E'\n\n## Two'||E'\n'||repeat('b ',300)||E'\n\n## Three'||E'\n'||repeat('c ',300), 4000) limit 1" "## One  ...  ## Three"
+check "a chunk cut from the middle of a long section carries its heading forward" \
+  "select head from platform.chunk_text('T', '## Page 4'||E'\n'||repeat('word ',900)||E'\n\n'||repeat('more ',900), 2500) where chunk = 1" "## Page 4 (continued)"
 check "a single-heading chunk names just that one" \
   "select head from platform.chunk_text('T', '## Only'||E'\n'||repeat('a ',100), 4000) limit 1" "## Only"
 check "a long text is chunked on its headings, title on every chunk" \
@@ -352,6 +355,26 @@ check "a topic that does not exist answers with the ones that do" \
   "select (public.skillhub_help('kaffe') like '%No topic matches \"kaffe\"%')::text || ':' || (public.skillhub_help('kaffe') like '%caretaker-operations%')::text" "true:true"
 check "overview points at help instead of repeating the tour" \
   "select (public.skillhub_overview()->'read_this_first'->>0 like '%skillhub_help%')::text || ':' || jsonb_array_length(public.skillhub_overview()->'read_this_first')::text" "true:2"
+# A document's TEXT in the store (2026-09-18): verbatim, with page markers, searchable by
+# words with the matching passage as the excerpt, readable whole or by pages, indexed by
+# meaning with the pages as chunk headings. Before this the catalogue knew a file's name and
+# hash and nothing read inside it.
+q "select public.skillhub_register_document('agent_01','QM-probe.pdf',12345,'application/pdf','0000probe','A probe manual written by the empty-database test','test', '0000probe/QM-probe.pdf')" >/dev/null
+q "select public.document_set_content((select id from public.documents where sha256='0000probe'), E'QUALITY MANUAL\n\n4.1 Scope\nThis manual applies to every delivery.\n\n## Page 2\n7.3 Supplier surveillance\nEvery approved supplier is audited within twelve months of the last audit; the surveillance register holds the dates.\n\n## Page 3\n9.1 Records\nRecords are kept for ten years.', 3, 'agent_01')" >/dev/null
+check "the text is stored with its page count" \
+  "select pages::text || ':' || (content like '%## Page 3%')::text || ':' || (content_loaded_at is not null)::text from public.documents where sha256='0000probe'" "3:true:true"
+check "the owner alone may load it" \
+  "select coalesce((select 'set' from (select public.document_set_content((select id from public.documents where sha256='0000probe'), 'x', 1, 'agent_02')) z), '')" "ERROR:  Document $(q "select id from public.documents where sha256='0000probe'") belongs to agent_01. Only its owner or the caretaker may load its text."
+check "a word inside the text is found, and the excerpt is the passage" \
+  "select (count(*) = 1)::text || ':' || bool_and(excerpt like '%twelve months%')::text from platform.search('surveillance twelve months', 5) where source='document' and id=(select id::text from public.documents where sha256='0000probe')" "true:true"
+check "read gives a page range, with the page headings kept" \
+  "select (public.skillhub_read('document',(select id::text from public.documents where sha256='0000probe'),null,null,'2-3')->>'pages_returned') || ':' || ((public.skillhub_read('document',(select id::text from public.documents where sha256='0000probe'),null,null,'2')->>'content') like '## Page 2%Supplier surveillance%')::text || ':' || ((public.skillhub_read('document',(select id::text from public.documents where sha256='0000probe'),null,null,'2')->>'content') like '%9.1 Records%')::text" "2-3 of 3:true:false"
+check "a page outside the document is refused, naming the range" \
+  "select public.skillhub_read('document',(select id::text from public.documents where sha256='0000probe'),null,null,'9')->>'error'" "Pages are 1 to 3 for this document; \"9\" is outside that."
+check "the catalogue view says it has text" \
+  "select has_text::text || ':' || pages::text from platform.v_documents where filename='QM-probe.pdf'" "true:3"
+check "and the indexer sees the text, cut with the pages as headings" \
+  "select (count(*) >= 1)::text || ':' || bool_or(c->>'text' like '%twelve months%')::text from jsonb_array_elements(public.embed_candidates(1000, 300)) c where c->>'source'='document' and c->>'id'=(select id::text from public.documents where sha256='0000probe')" "true:true"
 check "retiring the note works too" \
   "select (public.skillhub_retire('agent_01','note',(select id::text from public.notes where title='Seed test'),'seed test cleanup') ? 'retired_by')::text" "true"
 

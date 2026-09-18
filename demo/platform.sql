@@ -748,11 +748,19 @@ description. Never base64 in a column. Register it with skillhub_register_docume
    holds this data -- or skillhub_request_structure with document_id, natural_key and your
    observations when no table fits. The house standard is the skill load-from-source-system.
 
-   BUT REGISTERING A FILE SHARES NOTHING. Nothing here reads inside a file, and no later
-   step will: a registered document is findable by its NAME and cannot answer a single
-   question about what it says. So if you can read the file, THE CONTENT IS YOUR JOB.
-   Register it, then put what it says in the ordinary way -- each rule, procedure or
-   checklist as a skill that names the document and its revision as its source; shorter
+   A DOCUMENT PEOPLE WILL ASK ABOUT (a manual, a policy, a report) is uploaded the same
+   way, with its text beside it: skillhub_upload_url, run BOTH curl lines -- the file, and
+   the output of pdftotext -layout -- then skillhub_load_text(document_id). The store then
+   holds the text verbatim with page numbers: searched by words and by meaning, a hit names
+   the page, and a quotation is the document's own words.
+
+   BUT REGISTERING A FILE ALONE SHARES NOTHING. skillhub_register_document keeps a pointer
+   -- name, bytes, sha256 -- and nothing reads inside it: such a document is findable by its
+   NAME and cannot answer a single question about what it says. So when the text is not
+   loaded and you can read the file, THE CONTENT IS YOUR JOB. Register it, then put what it
+   says in the ordinary way -- each rule, procedure or checklist as a skill that names the
+   document and its revision as its source (the loaded text, if any, is what you condensed
+   from and what an auditor opens; the skill is the reading of it); shorter
    observations as notes; a long list of similar items (clauses, requirements, parts) as a
    table via skillhub_request_structure.
 

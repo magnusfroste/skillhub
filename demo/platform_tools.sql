@@ -29,10 +29,12 @@ drop function if exists public.skillhub_overview();
 create or replace function public.skillhub_overview(agent text default null) returns jsonb
 language sql stable security definer set search_path = public, platform as $$
   select jsonb_build_object(
+    -- Two lines, not three, and one of them is a pointer rather than a restatement: the tour
+    -- lives in start_here and is read with skillhub_help, the placement rule in
+    -- skillhub_rules. Saying it all again here was a third copy to keep in step.
     'read_this_first', jsonb_build_array(
-      'Run skillhub_rules before you write anything.',
-      'Run skillhub_search before you ANSWER a question from this data, not only before you create something. Someone may have written down how it has to be read, and reading it wrong gives a confident wrong number rather than an error.',
-      'Read whole objects with skillhub_read rather than working from an excerpt.'),
+      'New here, or unsure what this store holds? skillhub_help -- the tour in order, and the finished procedures.',
+      'Run skillhub_search before you ANSWER a question from this data, not only before you create something. Someone may have written down how it has to be read, and reading it wrong gives a confident wrong number rather than an error.'),
     'numbers', (select jsonb_object_agg(label, value) from platform.overview()),
     'who_is_here', (select coalesce(jsonb_agg(jsonb_build_object('agent', id, 'name', name,
                       'role', role) order by id), '[]'::jsonb)

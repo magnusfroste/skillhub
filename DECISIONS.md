@@ -752,6 +752,30 @@ keeps a breadcrumb and never the previous value. That is the same decision as ev
 holds no contents, which is exactly why agents may not delete — and changing it is a decision
 to take deliberately, not a gap to close quietly.
 
+## 28. A manual nobody could open
+
+`start_here` was written when the store was built: nine ordered steps, each with what to do
+and why, seeded on every boot. Nothing ever read it — not a function, not a tool, nothing but
+one SQL line buried in the conventions skill. And every step told its reader to run raw SQL,
+which is the single thing an agent key may not do. It was written before the tools existed and
+never caught up: a manual nobody could open, telling its only reader to use a door that had
+since been closed.
+
+So the steps now name tools, and `skillhub_help` is the door. What it deliberately is **not**
+is a second manual. The tour lives in `start_here` and nowhere else. The topics are the skills
+tagged `house-standard`, read live, so a new one becomes a topic the moment somebody publishes
+it — the store writing its own manual. The tools describe themselves in the client's own tool
+list, and repeating them here would be two places to keep in step; `skillhub_overview` stopped
+restating the tour too, and points at help instead.
+
+Two details that decide whether it is used. It returns **text, not jsonb**, for the reason
+`skillhub_report` does: the reader may be a person looking at a chat window, and a wall of
+JSON is exactly what is unreadable there. And a topic resolves the way `man` resolves a word,
+not by substring: *loading*, *csv* and *xlsx* all reach the loading standard, *admin* and
+*operations* reach the caretaker's, and a word that reaches nothing answers with the words that
+do. `loading` is not a substring of `load-from-source-system`, which is precisely the kind of
+detail that decides whether somebody types it twice or never again.
+
 ---
 
 ## What this does not do yet

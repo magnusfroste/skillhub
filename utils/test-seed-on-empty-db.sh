@@ -74,8 +74,8 @@ check "the index-on-write trigger is installed" \
 # live in the edge function (they talk to Storage), and skillhub_load_rows is SQL with no
 # tool of its own -- the loader calls it. Counting SQL, not tools, is what this database
 # receipt can verify.
-check "the nineteen skillhub_ functions exist" \
-  "select count(distinct proname) from pg_proc where proname like 'skillhub\\_%'" "19"
+check "the twenty skillhub_ functions exist" \
+  "select count(distinct proname) from pg_proc where proname like 'skillhub\\_%'" "20"
 check "rules are readable" \
   "select (public.skillhub_rules() ? 'placement_rule')::text" "true"
 check "overview answers" \
@@ -340,6 +340,18 @@ check "asking for a version that never existed says which do" \
   "select public.skillhub_read('skill','store-conventions',null,'9.9.9')->>'error'" "No version 9.9.9 of \"store-conventions\". The versions that exist: 1.0.0, 1.1.0."
 q "delete from platform.convention_sections where ord = 90" >/dev/null
 q "select platform.assemble_conventions()" >/dev/null
+# The door onto start_here, which nothing read for the first fortnight -- and which told its
+# only reader to run raw SQL, the one thing an agent key may not do.
+check "help is plain text, names the steps in order, and lists the topics" \
+  "select (public.skillhub_help() like '%WHAT TO DO, IN ORDER%')::text || ':' || (public.skillhub_help() like '%1. See the state%')::text || ':' || (public.skillhub_help() like '%load-from-source-system%')::text" "true:true:true"
+check "and the steps name tools, not SQL an agent may not run" \
+  "select (count(*) = 0)::text from public.start_here where do_this like '%select %' or do_this like '%platform.%'" "true"
+check "a topic reads the whole standard" \
+  "select (public.skillhub_help('loading') like '%load-from-source-system%Load data from a source system%')::text || ':' || (length(public.skillhub_help('loading')) > 2000)::text" "true:true"
+check "a topic that does not exist answers with the ones that do" \
+  "select (public.skillhub_help('kaffe') like '%No topic matches \"kaffe\"%')::text || ':' || (public.skillhub_help('kaffe') like '%caretaker-operations%')::text" "true:true"
+check "overview points at help instead of repeating the tour" \
+  "select (public.skillhub_overview()->'read_this_first'->>0 like '%skillhub_help%')::text || ':' || jsonb_array_length(public.skillhub_overview()->'read_this_first')::text" "true:2"
 check "retiring the note works too" \
   "select (public.skillhub_retire('agent_01','note',(select id::text from public.notes where title='Seed test'),'seed test cleanup') ? 'retired_by')::text" "true"
 

@@ -98,6 +98,15 @@ const TOOLS: Tool[] = [
     passAgent: true,
   },
   {
+    name: "skillhub_help",
+    description:
+      "What this store is and what to do with it, as plain text you can paste to a person: the tour in order, and the finished procedures that exist. Call it when somebody asks what the store can do, when you are new here, or when you are about to invent a way of working -- one of the topics may already be it. skillhub_help(topic) reads a topic in full. This describes the HOUSE; the tools you have are already listed for you.",
+    inputSchema: obj({
+      topic: str("A topic from the list skillhub_help gives, e.g. loading. Leave it out for the tour."),
+    }),
+    rpc: "skillhub_help",
+  },
+  {
     name: "skillhub_rules",
     description:
       "Read the rules before you write anything the first time. The placement rule decides whether something becomes a table, a note or a skill. Also lists the house standards for different kinds of work, and what the activity log does not prove.",

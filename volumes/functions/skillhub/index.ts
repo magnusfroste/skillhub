@@ -107,11 +107,12 @@ const TOOLS: Tool[] = [
   {
     name: "skillhub_read",
     description:
-      "Fetch one object in FULL, never a fragment. Search tells you which object; this gives you all of it, so you never answer from an excerpt without its context. Kind is skill, note, document or table.",
+      "Fetch one object in FULL, never a fragment. Search tells you which object; this gives you all of it, so you never answer from an excerpt without its context. Kind is skill, note, document or table. For a skill it also lists every version that exists, and version= reads an older one -- what a rule said last month, which is what an auditor asks. Cite the version you actually read.",
     inputSchema: obj(
       {
         kind: str("skill, note, document or table"),
         id: str("Slug for a skill, uuid for a note or document, table name for a table"),
+        version: str("A skill only: read this version instead of the current one, e.g. 1.0.0. The response always lists the versions that exist."),
       },
       ["kind", "id"],
     ),

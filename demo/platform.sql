@@ -918,18 +918,71 @@ grant select on all tables in schema platform to anon, authenticated, service_ro
 -- and carried the 'n' flag, under which '.' stops at a newline -- so nothing was stripped
 -- and the skill grew by four sections on every boot: 201,433 characters on dev after
 -- sixteen boots, found when the chunker produced sixteen chunks headed "## Overview".
--- The conventions skill is assembled from sections, one per file that owns one: the
--- placement rule here, lifecycle in platform_lifecycle.sql, house standards in
--- platform_loading.sql. Each file replaces ITS section in place and writes only when the
--- result differs.
+-- The conventions skill is assembled from SECTIONS, one row per file that owns one, and
+-- written as a new VERSION when the assembled text changes -- never edited in place.
 --
--- Until 2026-09-16 each file stripped everything from its heading to the END and appended
--- its own section again, and each set its own version number. The text came out the same
--- after the last file -- but every step in between was a real change, so every boot logged
--- four updates, walked the version 2.2.0 -> 2.0.0 -> 2.1.0 -> 2.2.0, and moved updated_at.
--- A caretaker asked how the store was doing called it a write loop, which is what it was.
--- Positional, not regexp_replace: the replacement string of regexp_replace interprets \1
--- and &, and these sections are prose.
+-- It was edited in place until 2026-09-17, and that made the one document every agent obeys
+-- the only house document with no history: a single row, and what it said last week was gone.
+-- Every skill an agent publishes has kept every version since the beginning, so this was
+-- inconsistent as well as wrong for anyone who has to show an auditor what a rule said then.
+--
+-- Sections as rows also retire the text surgery this used to need. Each file replaced its own
+-- section inside one long string, bounded by the heading that came next -- so every file had
+-- to know what could follow it, and the day a new section was added below, the file above it
+-- silently deleted it on every boot (found the same day, two writes per boot for nothing).
+-- Ordered rows cannot do that.
+create table if not exists platform.convention_sections (
+  ord        int primary key,
+  name       text not null,
+  body       text not null,
+  updated_at timestamptz not null default now()
+);
+comment on table platform.convention_sections is 'The conventions skill, in the pieces the seed files own: ord decides the order, and platform.assemble_conventions() joins them. Changing a body here is what produces a new version of the skill.';
+
+-- The parameters are prefixed, because "ord" and "name" are also the table's columns and
+-- Postgres refuses with "column reference is ambiguous" -- the same trap embed_save had.
+create or replace function platform.put_conventions_section(p_ord int, p_name text, p_body text) returns void
+language plpgsql as $f$
+begin
+  insert into platform.convention_sections as c (ord, name, body)
+  values (p_ord, p_name, p_body)
+  on conflict (ord) do update
+     set name = excluded.name, body = excluded.body, updated_at = now()
+   where c.body is distinct from excluded.body or c.name is distinct from excluded.name;
+end $f$;
+comment on function platform.put_conventions_section(int, text, text) is 'A seed file declaring its section of the conventions skill. Writes nothing when the text is unchanged.';
+
+-- One version per change, with the previous one marked superseded. Run last, after every file
+-- has declared its section.
+create or replace function platform.assemble_conventions() returns text
+language plpgsql as $f$
+declare
+  full_md text; cur record; next_version text;
+begin
+  select string_agg(body, E'\n' order by ord) into full_md from platform.convention_sections;
+  if full_md is null then return 'No sections declared; nothing to assemble.'; end if;
+
+  select version, skill_md into cur from platform.v_current_skills where slug = 'store-conventions';
+  if cur.version is not null and cur.skill_md = full_md then
+    return format('store-conventions %s is current; nothing changed.', cur.version);
+  end if;
+
+  -- 2.3.0 -> 2.4.0. The first component stays: a section rewrite is not a new document.
+  next_version := case when cur.version is null then '1.0.0'
+    else format('%s.%s.0', split_part(cur.version,'.',1), (split_part(cur.version,'.',2))::int + 1) end;
+
+  insert into public.skill_library (slug, name, description, skill_md, version, author_name, license, tags, visibility, status)
+  values ('store-conventions', 'Shared store conventions',
+          'The rules for every agent that reads and writes in the shared store: identity, ownership, public and private, new tables, migrations and files.',
+          full_md, next_version, 'skillhub', 'MIT',
+          '{store,conventions,mcp,hermes,shared-data}', 'public', 'published');
+  update public.skill_library set superseded_by = next_version, updated_at = now()
+   where slug = 'store-conventions' and version <> next_version and superseded_by is null;
+  return format('store-conventions %s published%s.', next_version,
+                coalesce(', superseding ' || cur.version, ' (first version)'));
+end $f$;
+comment on function platform.assemble_conventions() is 'Joins platform.convention_sections and publishes it as a new version of store-conventions when the text differs from the current one. Called at the end of the seed.';
+
 create or replace function platform.put_section(md text, start_marker text, next_markers text[], content text)
 returns text language plpgsql immutable as $f$
 declare st int; en int; p int; m text;
@@ -945,25 +998,16 @@ begin
 end $f$;
 comment on function platform.put_section(text, text, text[], text) is 'Replace the section of a text that begins with start_marker and runs to the next of next_markers (or the end) -- or append it when absent. The seed assembles the conventions skill with it.';
 
-with n as (
-  select platform.put_section(skill_md,
-           E'\nPLACEMENT RULE -- run platform.search() first',
-           array[E'\n## Lifecycle and files', E'\n## House standards'],
-           E'\n' || platform.placement_rule() || E'\n\n'
-           || E'## Overview\n\n'
-           || E'The `platform` schema is readable by every agent and answers "what is here":\n'
-           || E'- `select * from platform.overview()` -- seven numbers, run it first in a new session.\n'
-           || E'- `select * from platform.search(''keywords'')` -- find before you create, and before you answer.\n'
-           || E'- `select * from platform.v_catalog` -- every table, its size, whether it follows the convention.\n'
-           || E'- `select * from platform.v_flow limit 20` -- what other agents just did.\n'
-           || E'- `select * from platform.v_action_items` -- what needs tidying. Take one when you have time.\n'
-           || E'- `select * from platform.v_caveats` -- what the log does not prove.\n\n'
-           || E'A DDL guard refuses a new table in public that lacks the convention columns, and the\n'
-           || E'error tells you what to run instead. The guard is help, not an accusation: if you hit it,\n'
-           || E'you probably thought "table" when the answer was "note".\n') as md
-    from public.skill_library where slug = 'store-conventions')
-update public.skill_library s
-   set skill_md = n.md, version = '2.3.0', updated_at = now()
-  from n
- where s.slug = 'store-conventions'
-   and (s.skill_md is distinct from n.md or s.version is distinct from '2.3.0');
+select platform.put_conventions_section(10, 'placement rule and overview',
+  E'\n' || platform.placement_rule() || E'\n\n'
+  || E'## Overview\n\n'
+  || E'The `platform` schema is readable by every agent and answers "what is here":\n'
+  || E'- `select * from platform.overview()` -- seven numbers, run it first in a new session.\n'
+  || E'- `select * from platform.search(''keywords'')` -- find before you create, and before you answer.\n'
+  || E'- `select * from platform.v_catalog` -- every table, its size, whether it follows the convention.\n'
+  || E'- `select * from platform.v_flow limit 20` -- what other agents just did.\n'
+  || E'- `select * from platform.v_action_items` -- what needs tidying. Take one when you have time.\n'
+  || E'- `select * from platform.v_caveats` -- what the log does not prove.\n\n'
+  || E'A DDL guard refuses a new table in public that lacks the convention columns, and the\n'
+  || E'error tells you what to run instead. The guard is help, not an accusation: if you hit it,\n'
+  || E'you probably thought "table" when the answer was "note".\n');

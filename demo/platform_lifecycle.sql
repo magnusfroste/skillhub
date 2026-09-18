@@ -319,33 +319,24 @@ grant execute on all functions in schema platform to anon, authenticated, servic
 -- ---------------------------------------------------------------------------
 -- 5) Into the conventions skill, or no agent knows any of this exists.
 -- ---------------------------------------------------------------------------
-with n as (
-  select platform.put_section(skill_md,
-           E'\n## Lifecycle and files',
-           array[E'\n## House standards'],
-           E'\n## Lifecycle and files\n\n'
-           || E'Never delete a skill. If it turned out wrong or went out of date:\n'
-           || E'  select public.retire_skill(''slug'', ''why'', ''replacement-slug'');\n'
-           || E'Retired skills disappear from search but stay for traceability.\n\n'
-           || E'If you followed a skill and it worked -- say so:\n'
-           || E'  select public.confirm_skill(''slug'', ''agent_NN'');\n'
-           || E'That is the difference between a living library and an archive. See\n'
-           || E'platform.v_going_stale for what nobody has confirmed in a long time.\n\n'
-           -- Until 2026-09-16 this said "the contents are uploaded to Storage by a person --
-           -- you cannot upload bytes over MCP". True when written, false since the file
-           -- tools, and read by every agent at the start of every session: the same stale
-           -- sentence, in a house standard, stopped an agent that morning.
-           || E'Files: NEVER put contents (base64) in a column. A file of ROWS -- a csv, an\n'
-           || E'export -- is handed over, never retyped: skillhub_upload_url, run the curl line it\n'
-           || E'gives, then skillhub_load_file into the table that holds that data, or\n'
-           || E'skillhub_request_structure with the document_id when no table does. Any other file:\n'
-           || E'register it with skillhub_register_document, and if you can read it, the content is\n'
-           || E'your job -- the catalogue keeps name, bytes and sha256, and nothing reads inside a file.\n'
-           || E'If you are asked what a document says and its content is not in the store, say so\n'
-           || E'rather than guessing from the filename.\n') as md
-    from public.skill_library where slug = 'store-conventions')
-update public.skill_library s
-   set skill_md = n.md, version = '2.3.0', updated_at = now()
-  from n
- where s.slug = 'store-conventions'
-   and (s.skill_md is distinct from n.md or s.version is distinct from '2.3.0');
+select platform.put_conventions_section(20, 'lifecycle and files',
+  E'\n## Lifecycle and files\n\n'
+  || E'Never delete a skill. If it turned out wrong or went out of date:\n'
+  || E'  select public.retire_skill(''slug'', ''why'', ''replacement-slug'');\n'
+  || E'Retired skills disappear from search but stay for traceability.\n\n'
+  || E'If you followed a skill and it worked -- say so:\n'
+  || E'  select public.confirm_skill(''slug'', ''agent_NN'');\n'
+  || E'That is the difference between a living library and an archive. See\n'
+  || E'platform.v_going_stale for what nobody has confirmed in a long time.\n\n'
+  -- Until 2026-09-16 this said "the contents are uploaded to Storage by a person --
+  -- you cannot upload bytes over MCP". True when written, false since the file
+  -- tools, and read by every agent at the start of every session: the same stale
+  -- sentence, in a house standard, stopped an agent that morning.
+  || E'Files: NEVER put contents (base64) in a column. A file of ROWS -- a csv, an\n'
+  || E'export -- is handed over, never retyped: skillhub_upload_url, run the curl line it\n'
+  || E'gives, then skillhub_load_file into the table that holds that data, or\n'
+  || E'skillhub_request_structure with the document_id when no table does. Any other file:\n'
+  || E'register it with skillhub_register_document, and if you can read it, the content is\n'
+  || E'your job -- the catalogue keeps name, bytes and sha256, and nothing reads inside a file.\n'
+  || E'If you are asked what a document says and its content is not in the store, say so\n'
+  || E'rather than guessing from the filename.\n');

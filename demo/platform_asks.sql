@@ -159,26 +159,17 @@ grant execute on all functions in schema platform to anon, authenticated, servic
 -- Into the conventions skill, or no agent knows the board exists. Its own section, replaced
 -- in place like every other, so a boot over an up-to-date store writes nothing.
 -- ---------------------------------------------------------------------------
-with n as (
-  select platform.put_section(skill_md,
-           E'\n## Asking each other',
-           array[]::text[],
-           E'\n## Asking each other\n\n'
-           || E'When the store does not hold something you need, leave the question on the board:\n'
-           || E'  skillhub_ask(''what you need, and what you already looked at'', for_agent optional)\n'
-           || E'It searches first and shows what it found. NOBODY IS NOTIFIED. A colleague''s agent\n'
-           || E'sees your question the next time somebody talks to it -- minutes, or tomorrow. If it\n'
-           || E'is urgent, ask the person in front of you.\n\n'
-           || E'You see questions left for you, and answers to yours, in skillhub_overview.\n'
-           || E'Answer one with skillhub_answer(ask_id, answer). Then the rule that makes the board\n'
-           || E'worth having: IF YOU ANSWERED FROM YOUR OWN KNOWLEDGE RATHER THAN FROM THE STORE,\n'
-           || E'WRITE IT DOWN -- a note, or a skill if it is a procedure others should follow. The\n'
-           || E'board is not searched by meaning and never will be: a question is not knowledge, and\n'
-           || E'an answer that lives only there is one the next person has to ask for again.\n') as md
-    from public.skill_library where slug = 'store-conventions')
-update public.skill_library s
-   set skill_md = n.md, version = '2.3.0', updated_at = now()
-  from n
- where s.slug = 'store-conventions'
-   and (s.skill_md is distinct from n.md or s.version is distinct from '2.3.0');
+select platform.put_conventions_section(40, 'asking each other',
+  E'\n## Asking each other\n\n'
+  || E'When the store does not hold something you need, leave the question on the board:\n'
+  || E'  skillhub_ask(''what you need, and what you already looked at'', for_agent optional)\n'
+  || E'It searches first and shows what it found. NOBODY IS NOTIFIED. A colleague''s agent\n'
+  || E'sees your question the next time somebody talks to it -- minutes, or tomorrow. If it\n'
+  || E'is urgent, ask the person in front of you.\n\n'
+  || E'You see questions left for you, and answers to yours, in skillhub_overview.\n'
+  || E'Answer one with skillhub_answer(ask_id, answer). Then the rule that makes the board\n'
+  || E'worth having: IF YOU ANSWERED FROM YOUR OWN KNOWLEDGE RATHER THAN FROM THE STORE,\n'
+  || E'WRITE IT DOWN -- a note, or a skill if it is a procedure others should follow. The\n'
+  || E'board is not searched by meaning and never will be: a question is not knowledge, and\n'
+  || E'an answer that lives only there is one the next person has to ask for again.\n');
 

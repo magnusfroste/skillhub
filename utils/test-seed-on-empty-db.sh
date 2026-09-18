@@ -304,6 +304,27 @@ check "health notices a question nobody has answered" \
 # lived on dev and made that call ambiguous (2026-09-17); the seed drops them now.
 check "the caretaker has exactly one load_registered_file to call" \
   "select count(*) from pg_proc where proname='load_registered_file' and pronamespace='platform'::regnamespace" "1"
+# The conventions skill is now published from its sections as a NEW VERSION when the text
+# changes, never edited in place: it was the one house document with no earlier version to
+# show anyone, while every skill an agent publishes has kept all of them since the beginning.
+check "the conventions skill is assembled from its sections" \
+  "select (count(*) >= 5)::text || ':' || (min(ord) = 0)::text from platform.convention_sections" "true:true"
+check "and published as a version, with the sections in it" \
+  "select version || ':' || (skill_md like '%PLACEMENT RULE%' and skill_md like '%## Lifecycle and files%' and skill_md like '%## House standards%' and skill_md like '%## Asking each other%')::text from platform.v_current_skills where slug='store-conventions'" "1.0.0:true"
+q "select platform.put_conventions_section(90, 'a probe section', E'\n## A probe section\n\nWritten by the empty-database test to pin that a changed section publishes a new version.\n')" >/dev/null
+check "a changed section publishes the next version and supersedes the last" \
+  "select left(platform.assemble_conventions(), 33)" "store-conventions 1.1.0 published"
+check "both versions are there, the older one marked" \
+  "select count(*)::text || ':' || (select superseded_by from public.skill_library where slug='store-conventions' and version='1.0.0') from public.skill_library where slug='store-conventions'" "2:1.1.0"
+check "an agent can read the older version by name" \
+  "select (public.skillhub_read('skill','store-conventions',null,'1.0.0')->>'version') || ':' || (public.skillhub_read('skill','store-conventions',null,'1.0.0')->>'content' not like '%A probe section%')::text" "1.0.0:true"
+check "and sees which versions exist without being told" \
+  "select jsonb_array_length(public.skillhub_read('skill','store-conventions')->'versions')::text || ':' || (public.skillhub_read('skill','store-conventions')->>'version')" "2:1.1.0"
+# The tools hand an agent a readable error rather than a raised one, so this is what it sees.
+check "asking for a version that never existed says which do" \
+  "select public.skillhub_read('skill','store-conventions',null,'9.9.9')->>'error'" "No version 9.9.9 of \"store-conventions\". The versions that exist: 1.0.0, 1.1.0."
+q "delete from platform.convention_sections where ord = 90" >/dev/null
+q "select platform.assemble_conventions()" >/dev/null
 check "retiring the note works too" \
   "select (public.skillhub_retire('agent_01','note',(select id::text from public.notes where title='Seed test'),'seed test cleanup') ? 'retired_by')::text" "true"
 

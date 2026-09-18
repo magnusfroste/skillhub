@@ -104,7 +104,13 @@ $$;
 --
 -- Filters on ownership. Before 2026-09-11 this returned `visibility` as a column and
 -- filtered on nothing, so another agent's private note came back in clear text.
-create or replace function public.skillhub_read(kind text, id text, agent text default null)
+-- The version parameter (2026-09-17). Every version of a skill has been its own row since
+-- the beginning -- publishing supersedes, it never overwrites -- but nothing could READ an
+-- older one: this returned the newest and search shows one row per slug, so "what did the
+-- rule say last week" was a question only the caretaker could answer, with SQL. In a
+-- regulated shop that is the question an auditor asks first.
+drop function if exists public.skillhub_read(text, text, text);
+create or replace function public.skillhub_read(kind text, id text, agent text default null, version text default null)
 returns jsonb language plpgsql stable security definer set search_path = public, platform as $$
 declare j jsonb;
 begin
@@ -112,16 +118,33 @@ begin
     select to_jsonb(x) into j from (
       select 'skill' as kind, s.slug as id, s.name, s.description, s.version, s.author_name as author,
              s.status, s.tags, s.skill_md as content, s.verified_at, s.superseded_by,
-             s.updated_at::timestamp(0) as updated
+             s.updated_at::timestamp(0) as updated,
+             -- Every version that exists, newest first, so a reader can ask for one by name
+             -- rather than discover the history only when somebody mentions it.
+             (select jsonb_agg(jsonb_build_object('version', v.version, 'status', v.status,
+                        'published', v.created_at::timestamp(0), 'by', v.author_name,
+                        'superseded_by', v.superseded_by)
+                      order by string_to_array(v.version,'.')::int[] desc)
+                from public.skill_library v
+               where v.slug = skillhub_read.id
+                 and (v.visibility = 'public' or v.author_name = skillhub_read.agent)) as versions,
+             case when skillhub_read.version is null then 'This is the current version. "versions" lists the others; read one with version=, and cite the version you actually read.'
+                  else 'You asked for this version by name. The current one may say something else -- check "versions".' end as note
       from public.skill_library s
       where s.slug = skillhub_read.id
         and (s.visibility = 'public' or s.author_name = skillhub_read.agent)
+        and (skillhub_read.version is null or s.version = skillhub_read.version)
       -- Newest version, by number and not by luck. Measured 2026-09-12: with two versions
       -- present this returned whichever row came first physically, so publishing an
       -- improvement left every colleague reading the old text, silently. Sorting on the
       -- string would put 1.10.0 before 1.9.0, hence the array of integers.
       order by string_to_array(s.version,'.')::int[] desc
       limit 1) x;
+    if j is null and skillhub_read.version is not null then
+      raise exception 'No version % of "%". The versions that exist: %.', skillhub_read.version, skillhub_read.id,
+        coalesce((select string_agg(v.version, ', ' order by string_to_array(v.version,'.')::int[])
+                    from public.skill_library v where v.slug = skillhub_read.id), '(no skill with that slug)');
+    end if;
   elsif kind = 'note' then
     select to_jsonb(x) into j from (
       select 'note' as kind, n.id::text, n.title, n.content, n.tags,
@@ -1051,3 +1074,10 @@ begin
   return format('%s built and request %s resolved; the loader is reading %s. Check platform.deliveries in a moment.', tname, request_id, d.filename);
 end $$;
 comment on function platform.load_registered_file(bigint,text,text,text) is 'Caretaker only: build the table a request asks for (observations as column comments), resolve it, and have the loader read the uploaded file into it.';
+
+-- ---------------------------------------------------------------------------
+-- Last of all: publish the conventions skill from its sections, as a new version if the text
+-- changed and not at all if it did not. Every file has declared its section by now.
+-- ---------------------------------------------------------------------------
+do $c$ begin raise notice '%', platform.assemble_conventions(); end $c$;
+

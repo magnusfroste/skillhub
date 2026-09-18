@@ -718,6 +718,40 @@ agent_04 saw it under `asked_of_you` at the start of its session, answered, and 
 the answer under `your_questions` — with the tool telling agent_04, in those capitals, to write
 it down so nobody has to ask again. The joke works.
 
+## 27. The house's own document had no history
+
+Every skill an agent publishes has kept every version since the beginning: publishing
+supersedes, it never overwrites, and retiring marks. The conventions skill — the one document
+every agent obeys — was the exception. Four seed files each rewrote their section of it in
+place, on every boot, and the row carried whatever the last one left. One row, and what the
+rule said last week was gone.
+
+Two faults, and the second was worse. The text surgery bounded each section by the heading
+that came next, so every file had to know what could follow it: the day a section was added
+below, the file above it silently deleted the new one on every boot and the one below re-added
+it. Two writes to the change log for nothing, found by the check that says a boot writes
+nothing.
+
+Sections are rows now. `platform.convention_sections` holds one per file that owns one, each
+file declares its own with `platform.put_conventions_section` and writes nothing when the text
+is unchanged, and `platform.assemble_conventions()` — last in the seed — joins them and
+**publishes a new version** when the result differs from the current one, superseding the
+previous. Ordered rows cannot delete each other, so the marker lists are gone.
+
+On dev the first assembly after the change published 2.4.0 and marked 2.3.0 superseded. A
+second boot writes nothing at all.
+
+And the history is readable, which it was not: `skillhub_read` takes a `version` and always
+lists the versions that exist, with who published each and what superseded it. Before this,
+the rows were there and only the caretaker could see them, with SQL — *what did the rule say
+last month* being the first question an auditor asks. Asking for a version that never existed
+answers with the ones that do.
+
+Still not versioned: notes, which are edited in place, and table rows, where the change log
+keeps a breadcrumb and never the previous value. That is the same decision as ever — the log
+holds no contents, which is exactly why agents may not delete — and changing it is a decision
+to take deliberately, not a gap to close quietly.
+
 ---
 
 ## What this does not do yet

@@ -187,29 +187,16 @@ grant execute on all functions in schema platform to anon, authenticated, servic
 -- ---------------------------------------------------------------------------
 -- 4) The conventions skill points at the house standards, or nobody finds them.
 -- ---------------------------------------------------------------------------
-with n as (
-  select platform.put_section(skill_md,
-           E'\n## House standards',
-           -- Every section that can follow this one. A file whose list is short replaces to
-           -- the END of the skill and wipes whatever came after: this list was empty when
-           -- platform_asks.sql added a section below, so every boot deleted the new section
-           -- here and re-added it there -- two writes to the change log, for nothing.
-           array[E'\n## Asking each other'],
-           E'\n## House standards\n\n'
-           || E'Skills tagged `house-standard` describe how a particular kind of work is done here.\n'
-           || E'Find them with:\n'
-           || E'  select slug, name, description from skill_library\n'
-           || E'   where ''house-standard'' = any(tags) and status = ''published'';\n\n'
-           || E'Read the one that covers your work BEFORE you start, not after. Right now there is:\n'
-           || E'- `load-from-source-system` -- bring an export (xlsx, csv, json) in from another system.\n'
-           -- The whole list lives here, including the standard platform_ops.sql seeds a moment
-           -- later: a second file patching a line into this section rewrote it on every boot.
-           || E'- `caretaker-operations` -- for the admin key: what to check, what to do, what to leave alone.\n\n'
-           || E'If you invent a way of working that works and others will need: write a skill, tag it\n'
-           || E'`house-standard`, and add it to the list above. That is how the store learns.\n') as md
-    from public.skill_library where slug = 'store-conventions')
-update public.skill_library s
-   set skill_md = n.md, version = '2.3.0', updated_at = now()
-  from n
- where s.slug = 'store-conventions'
-   and (s.skill_md is distinct from n.md or s.version is distinct from '2.3.0');
+select platform.put_conventions_section(30, 'house standards',
+  E'\n## House standards\n\n'
+  || E'Skills tagged `house-standard` describe how a particular kind of work is done here.\n'
+  || E'Find them with:\n'
+  || E'  select slug, name, description from skill_library\n'
+  || E'   where ''house-standard'' = any(tags) and status = ''published'';\n\n'
+  || E'Read the one that covers your work BEFORE you start, not after. Right now there is:\n'
+  || E'- `load-from-source-system` -- bring an export (xlsx, csv, json) in from another system.\n'
+  -- The whole list lives here, including the standard platform_ops.sql seeds a moment
+  -- later: a second file patching a line into this section rewrote it on every boot.
+  || E'- `caretaker-operations` -- for the admin key: what to check, what to do, what to leave alone.\n\n'
+  || E'If you invent a way of working that works and others will need: write a skill, tag it\n'
+  || E'`house-standard`, and add it to the list above. That is how the store learns.\n');

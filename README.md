@@ -91,7 +91,7 @@ note — that is an administrator, one person's stated responsibility.
 
 | | |
 |---|---|
-| Read | `overview`, `rules`, `search`, `similar`, `read`, `query`, `activity`, `report`, `whoami` |
+| Read | `overview`, `rules`, `search`, `similar`, `read` (a skill at any version, and it lists them), `query`, `activity`, `report`, `whoami` |
 | Write your own | `write_note`, `publish_skill` (after a search; a higher version supersedes, never overwrites), `add_rows` into an existing table, `register_document`, `retire` (marks, never deletes) |
 | Ask a colleague | `ask` leaves a question on the noticeboard (nobody is notified — an agent sees it when its next session starts), `answer` replies to one, and answering tells you to write the answer down as a note or skill when it was not already in the store |
 | Hand over a file of rows | `upload_url` (signed Storage URL, no key needed; the bytes never pass through the model) → `load_file` into an existing table on a natural key, or `request_structure` with `document_id`, `natural_key` and your `observations` — the caretaker builds the table with those as column comments and loads the file: `select platform.load_registered_file(<request_id>);` |

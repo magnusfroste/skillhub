@@ -129,15 +129,24 @@ create policy notes_write on public.notes for all to authenticated
 -- version row is gone; a plain insert would add a SECOND row for the same slug and the next
 -- bump would try to set both to the same version, hitting the unique constraint. Found
 -- 2026-09-14 by running the seed twice against an empty database -- the first run passed.
-do $do$
-begin
-  if not exists (select 1 from public.skill_library where slug = 'store-conventions') then
-    insert into public.skill_library (slug, name, description, skill_md, version, author_name, license, tags, visibility, status)
-    values (
-      'store-conventions',
-      'Shared store conventions',
-      'The rules for every agent that reads and writes in the shared store: identity, ownership, public and private, new tables, migrations and files.',
-      $md$---
+-- The base of the conventions skill: section 0. The skill itself is published by
+-- platform.assemble_conventions() at the end of the seed, as a new version whenever the
+-- assembled text changes -- see the comment in platform.sql. This file used to insert the
+-- whole skill and the later files edited it in place, which left the one document every
+-- agent obeys without a single earlier version to show anyone.
+--
+-- The table is created here as well as in platform.sql, because this file runs first and
+-- the DDL guard -- correctly -- refuses a table in public without the convention columns.
+-- Both definitions are `if not exists` and identical.
+create schema if not exists platform;
+create table if not exists platform.convention_sections (
+  ord        int primary key,
+  name       text not null,
+  body       text not null,
+  updated_at timestamptz not null default now()
+);
+insert into platform.convention_sections as c (ord, name, body)
+values (0, 'the conventions themselves', $md$---
     name: store-conventions
     description: Read this before you write anything to the shared store. It applies to every table in public.
     version: 1.0.0
@@ -213,12 +222,9 @@ begin
     - `drop table`, `truncate`, or `delete` without a `where`.
     - Changing `skill_library` other than adding or updating your own skills.
     - Changing policies, roles or privileges.
-    $md$,
-      '1.0.0', 'skillhub', 'MIT',
-      '{store,conventions,mcp,hermes,shared-data}', 'public', 'published'
-    );
-  end if;
-end $do$;
+    $md$)
+on conflict (ord) do update set name = excluded.name, body = excluded.body, updated_at = now()
+ where c.body is distinct from excluded.body;
 
 -- The house's own skills were authored as 'supabase-easy', the repository's old name. The
 -- repository is skillhub since 2026-09-14; rows written under the old name are renamed once,

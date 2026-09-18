@@ -1,4 +1,5 @@
 // MCP server for the shared data store.
+import { configuredEmbeddingsEndpoint } from "../_shared/embeddings.ts"
 //
 // Why it exists: Supabase's own MCP server has eleven fixed tools and cannot be extended
 // without forking Studio.
@@ -378,7 +379,7 @@ const BAD_REQUEST_CODES = new Set([-32602, -32021, -32022]);
 
 /** Embeds a question and returns the nearest objects. null when no endpoint is configured. */
 async function semanticSearch(query: string, maxHits: number): Promise<unknown[] | null> {
-  const url = Deno.env.get("EMBEDDING_URL") ?? "";
+  const url = configuredEmbeddingsEndpoint();
   if (!url) return null;
   const model = Deno.env.get("EMBEDDING_MODEL") ?? "text-embedding-3-small";
   const key = Deno.env.get("EMBEDDING_KEY");

@@ -134,7 +134,7 @@ begin
     create table if not exists public.%1$I (
       id          uuid primary key default gen_random_uuid(),
       owner       text not null,
-      visibility  text not null default 'public' check (visibility in ('public','private')),
+      visibility  text not null default 'public' check (visibility in ('public','team','private')),
       created_by  text not null,
       updated_by  text not null,
       created_at  timestamptz not null default now(),
@@ -146,10 +146,33 @@ begin
   execute format('create index if not exists %I on public.%I (owner, visibility)', table_name || '_owner_visibility_idx', table_name);
   execute format('comment on table public.%I is %L', table_name, description);
   execute format('comment on column public.%I.owner is %L', table_name, 'The agent identifier, agent_NN. Set by the agent on insert.');
-  execute format('comment on column public.%I.visibility is %L', table_name, 'public = everyone may read and write, private = the owner only.');
+  execute format('comment on column public.%I.visibility is %L', table_name, 'public = everyone may read, team = agents in the owner''s team (public.agents.team), private = the owner only. The caretaker reads all three.');
   execute format('comment on column public.%I.created_by is %L', table_name, 'Who created the row. Set by the agent.');
   execute format('comment on column public.%I.updated_by is %L', table_name, 'Who last changed the row. Set by the agent on every update.');
   perform platform.attach_change_log(table_name);
+end $$;
+
+-- Tables made before 2026-09-18 carry the two-value check the template had then, and the
+-- skill library its own three (unlisted is a library notion, kept). Widened here on every
+-- boot: the loop finds nothing once every constraint names team, so a boot over an
+-- up-to-date store alters nothing. A constraint is dropped and re-added, which scans the
+-- table once -- at this store's scale, milliseconds.
+do $$
+declare r record; allowed text;
+begin
+  for r in
+    select c.conrelid::regclass as rel, c.conname, c.conrelid::regclass::text as name
+    from pg_constraint c join pg_namespace n on n.oid = c.connamespace
+    where n.nspname = 'public' and c.contype = 'c'
+      and pg_get_constraintdef(c.oid) ilike '%visibility%'
+      and pg_get_constraintdef(c.oid) not ilike '%''team''%'
+  loop
+    allowed := case when r.name = 'skill_library' then '''public'',''team'',''unlisted'',''private'''
+                    else '''public'',''team'',''private''' end;
+    execute format('alter table %s drop constraint %I', r.rel, r.conname);
+    execute format('alter table %s add constraint %I check (visibility in (%s))', r.rel, r.conname, allowed);
+    raise notice 'visibility on % now allows team', r.rel;
+  end loop;
 end $$;
 
 -- ---------------------------------------------------------------------------
@@ -380,6 +403,7 @@ select unnest(array[
   'WHO wrote a row is taken from the gateway, not from the caller. Every write tool overwrites the agent argument with the identity Kong resolved from the API key, and there is no other write path for an agent key. Verified 2026-09-14: a write made with one key while claiming another -- in the argument AND in a hand-forged x-consumer-username header -- landed with the calling key in owner, created_by and updated_by, and the change log recorded the same.',
   'What the key does NOT prove is WHO is behind it. It binds a call to agent_NN, not agent_NN to a person: the display name and role in public.agents are rows somebody filled in about themselves, and a key sitting on two machines is one identity in the log. Trace to a person only as far as those two facts allow.',
   'DELETE keeps no contents anywhere -- the log stores table, operation, row id, agent and a summary, never the row. An agent key cannot delete at all; skillhub_retire marks the row and leaves it readable. The caretaker can delete, through raw SQL, and nothing in the database will stop it. That is the one irreversible act in this store.',
+  'TEAM is a row in public.agents that the caretaker typed. A team row is shared with whoever has the same word there, and the word proves membership the way a name tag does. Wrong team, wrong readers.',
   'Everything defaults to PUBLIC. Private is a flag the writer has to set, so a forgotten flag is a disclosure to everyone here, not an error. And private means other agents cannot read it -- the caretaker''s key ignores row security entirely, so private is not a place for anything that would matter if an administrator read it.',
   'The key is in clear text in the config file on the device that holds it. Whoever holds the machine holds that agent''s identity and everything public in the store. If a machine goes missing, rotate that slot and recreate the gateway container -- a restart is not enough, because the list of permitted callers is rendered at container creation.'
 ]) as caveat;
@@ -405,9 +429,10 @@ end $$;
 -- ---------------------------------------------------------------------------
 -- 10) Finding things: keyword search now, semantic search once the vectors fill.
 -- ---------------------------------------------------------------------------
--- Filters on ownership: a private note or document belongs to its owner alone. The
--- third argument is the agent the gateway verified; null means public only, so a
--- caller that forgets to pass an identity sees less and never more.
+-- Filters on ownership through platform.may_read: a private note or document belongs to
+-- its owner alone, a team one to the owner's team. The third argument is the agent the
+-- gateway verified; null means public only, so a caller that forgets to pass an identity
+-- sees less and never more.
 -- platform.search() is defined in platform_lifecycle.sql: it reads platform.v_current_skills and
 -- honours the retire columns. An older copy lived here and won whenever a later file failed.
 
@@ -727,8 +752,8 @@ PERSONAL DATA IS THE ONE THING YOU STOP AND ASK ABOUT.
    stay in the system they came from. Aggregate first, and the problem usually
    disappears.
 
-   And never as a private row either: private means other agents cannot read it, not
-   that it is a lawful place to keep somebody's medical history.
+   And never as a private or a team row either: those mean other agents cannot read it,
+   not that it is a lawful place to keep somebody's medical history.
 
 TEXT THAT SOMEONE SHOULD FIND BY MEANING NEVER BELONGS IN A TABLE CELL.
    Notes and skills are embedded, so they can be found by asking for what they mean.

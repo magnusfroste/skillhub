@@ -146,6 +146,7 @@ const TOOLS: Tool[] = [
       "What other agents did recently, collapsed per minute so a bulk load does not drown the rest. Use it to see whether someone is already working on the same thing and what changed since last time.",
     inputSchema: obj({ max_rows: int("Number of rows", 20) }),
     rpc: "skillhub_activity",
+    passAgent: true,
   },
   {
     name: "skillhub_query",
@@ -176,6 +177,7 @@ const TOOLS: Tool[] = [
         content: str("Body text, markdown allowed"),
         tags: { type: "array", items: { type: "string" }, description: "Free tags for search" },
         private: { type: "boolean", description: "True only when the user explicitly asked for it", default: false },
+        visibility: str("public (default), team or private. team = readable by the agents in your team (skillhub_whoami says which); refused if you have none. Neither team nor private notes are indexed by meaning."),
       },
       ["title", "content"],
     ),
@@ -194,6 +196,7 @@ const TOOLS: Tool[] = [
         description: str("One sentence on when to use it"),
         tags: { type: "array", items: { type: "string" }, description: "Tag it house-standard if it describes how a kind of work is done here" },
         version: str("Version, default 1.0.0"),
+        visibility: str("public (default), team or private. A team skill is read by your team only and is not indexed by meaning; a house standard is always public."),
       },
       ["slug", "name", "content"],
     ),
@@ -228,7 +231,7 @@ const TOOLS: Tool[] = [
       table_name: str("An existing table in public. skillhub_overview lists them."),
       rows: { type: "array", items: { type: "object" },
         description: "Objects with identical fields, e.g. [{\"name\":\"ACME\",\"city\":\"Malmo\"}]. Leave out owner, created_by, updated_by and the timestamps -- those come from your key." },
-      visibility: str("public (default) or private. Private rows are never indexed, so nobody finds them by meaning."),
+      visibility: str("public (default), team or private. team = the agents in your team; refused if you have none. Neither team nor private rows are indexed by meaning."),
     }, ["table_name", "rows"]),
     rpc: "skillhub_add_rows",
     needsAgent: true,
@@ -250,6 +253,7 @@ const TOOLS: Tool[] = [
         sha256: str("Checksum of the content"),
         description: str("What the file contains and what it is good for"),
         source: str("Where it came from: system, sender, path"),
+        visibility: str("public (default), team or private. Who may see the document exists and read its text."),
       },
       ["filename"],
     ),
@@ -275,6 +279,7 @@ const TOOLS: Tool[] = [
       sha256: str("sha256 of the file (sha256sum <file>). Names the upload path and lets the store spot the same file delivered twice."),
       description: str("What the file contains and where it came from: 'monthly export of support tickets from the case system'."),
       bytes: { type: "integer", description: "Size in bytes, if you know it." },
+      visibility: str("public (default), team or private. Who may see the document and read its text once loaded."),
     }, ["filename", "sha256", "description"]),
     rpc: "__upload_url__",
     needsAgent: true,
@@ -540,6 +545,7 @@ async function handle(body: any, agent: string): Promise<unknown | null> {
         const reg = await callRpc("skillhub_register_document", {
           agent, filename, sha256: sha, description: String(args.description ?? ""), bytes: args.bytes ?? null,
           mime_type: filename.toLowerCase().endsWith(".csv") ? "text/csv" : null, source: "uploaded by " + agent, path,
+          visibility: args.visibility ?? "public",
         }) as any;
         // Same bytes, same path: a file already uploaded needs no second upload, and a signed
         // URL would answer 409 to one. Say so instead of handing out a curl line that fails.

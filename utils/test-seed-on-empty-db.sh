@@ -375,6 +375,33 @@ check "the catalogue view says it has text" \
   "select has_text::text || ':' || pages::text from platform.v_documents where filename='QM-probe.pdf'" "true:3"
 check "and the indexer sees the text, cut with the pages as headings" \
   "select (count(*) >= 1)::text || ':' || bool_or(c->>'text' like '%twelve months%')::text from jsonb_array_elements(public.embed_candidates(1000, 300)) c where c->>'source'='document' and c->>'id'=(select id::text from public.documents where sha256='0000probe')" "true:true"
+# Teams (2026-09-18): a third visibility between public and private. The word in
+# public.agents.team is the whole mechanism -- same word, same team -- and every read path
+# asks platform.may_read, so one probe per door: search, read, query, activity, and the
+# indexer, which must NOT see it.
+q "update public.agents set team = 'sales' where id in ('agent_01','agent_02')" >/dev/null
+q "update public.agents set team = null where id = 'agent_03'" >/dev/null
+check "existing tables accept team after the widening" \
+  "select (count(*) = 0)::text from pg_constraint c join pg_namespace n on n.oid = c.connamespace where n.nspname = 'public' and c.contype = 'c' and pg_get_constraintdef(c.oid) ilike '%visibility%' and pg_get_constraintdef(c.oid) not ilike '%''team''%'" "true"
+q "select public.skillhub_write_note('agent_01','Sales team probe','The price list for the northern region is revised in March.', '{}', false, 'team')" >/dev/null
+check "a team note is stored as one" \
+  "select visibility || ':' || owner from public.notes where title='Sales team probe'" "team:agent_01"
+check "a colleague in the team reads it, one outside does not, the caretaker does" \
+  "select (public.skillhub_read('note',(select id::text from public.notes where title='Sales team probe'),'agent_02') ? 'content')::text || ':' || (public.skillhub_read('note',(select id::text from public.notes where title='Sales team probe'),'agent_03') ? 'content')::text || ':' || (public.skillhub_read('note',(select id::text from public.notes where title='Sales team probe'),'service_role') ? 'content')::text" "true:false:true"
+check "search follows the same rule" \
+  "select (select count(*) from platform.search('northern region price', 5, 'agent_02') where source='note')::text || ':' || (select count(*) from platform.search('northern region price', 5, 'agent_03') where source='note')::text || ':' || (select count(*) from platform.search('northern region price', 5, null) where source='note')::text" "1:0:0"
+check "and the query tool" \
+  "select (public.skillhub_query('agent_02','notes',array['count(*)'],'[[\"title\",\"=\",\"Sales team probe\"]]')->'rows'->0->>'count') || ':' || (public.skillhub_query('agent_03','notes',array['count(*)'],'[[\"title\",\"=\",\"Sales team probe\"]]')->'rows'->0->>'count')" "1:0"
+check "the activity log shows the title to the team and hides it outside" \
+  "select (public.skillhub_activity(50,'agent_02')::text like '%Sales team probe%')::text || ':' || (public.skillhub_activity(50,'agent_03')::text like '%Sales team probe%')::text || ':' || (public.skillhub_activity(50)::text like '%Sales team probe%')::text" "true:false:false"
+check "the indexer never sees it" \
+  "select (count(*) = 0)::text from jsonb_array_elements(public.embed_candidates(1000, 2000)) c where c->>'source'='note' and c->>'id'=(select id::text from public.notes where title='Sales team probe')" "true"
+check "an agent with no team cannot write a team row" \
+  "select coalesce((select 'wrote' from (select public.skillhub_write_note('agent_03','No team probe','x', '{}', false, 'team')) z), '')" "ERROR:  You (agent_03) are in no team, so there is nobody a team row would be shared with. Write it public or private, or ask the caretaker to set your team in the agents table."
+check "whoami says which team" \
+  "select (public.skillhub_whoami('agent_01')->>'team') || ':' || coalesce(public.skillhub_whoami('agent_03')->>'team','none')" "sales:none"
+q "delete from public.notes where title='Sales team probe'" >/dev/null
+q "update public.agents set team = null" >/dev/null
 check "retiring the note works too" \
   "select (public.skillhub_retire('agent_01','note',(select id::text from public.notes where title='Seed test'),'seed test cleanup') ? 'retired_by')::text" "true"
 

@@ -37,7 +37,7 @@ language sql stable security definer set search_path = public, platform as $$
       'Run skillhub_search before you ANSWER a question from this data, not only before you create something. Someone may have written down how it has to be read, and reading it wrong gives a confident wrong number rather than an error.'),
     'numbers', (select jsonb_object_agg(label, value) from platform.overview()),
     'who_is_here', (select coalesce(jsonb_agg(jsonb_build_object('agent', id, 'name', name,
-                      'role', role) order by id), '[]'::jsonb)
+                      'role', role, 'team', team) order by id), '[]'::jsonb)
                     from public.agents where active),
     'tables', (select jsonb_agg(jsonb_build_object('table', table_name, 'rows', rows,
                  'comment', description, 'follows_convention', follows_convention))
@@ -130,12 +130,12 @@ begin
                       order by string_to_array(v.version,'.')::int[] desc)
                 from public.skill_library v
                where v.slug = skillhub_read.id
-                 and (v.visibility = 'public' or v.author_name = skillhub_read.agent)) as versions,
+                 and platform.may_read(v.visibility, v.author_name, skillhub_read.agent)) as versions,
              case when skillhub_read.version is null then 'This is the current version. "versions" lists the others; read one with version=, and cite the version you actually read.'
                   else 'You asked for this version by name. The current one may say something else -- check "versions".' end as note
       from public.skill_library s
       where s.slug = skillhub_read.id
-        and (s.visibility = 'public' or s.author_name = skillhub_read.agent)
+        and platform.may_read(s.visibility, s.author_name, skillhub_read.agent)
         and (skillhub_read.version is null or s.version = skillhub_read.version)
       -- Newest version, by number and not by luck. Measured 2026-09-12: with two versions
       -- present this returned whichever row came first physically, so publishing an
@@ -154,7 +154,7 @@ begin
              n.owner, n.visibility, n.updated_at::timestamp(0) as updated
       from public.notes n
       where n.id::text = skillhub_read.id
-        and (n.visibility = 'public' or n.owner = skillhub_read.agent)) x;
+        and platform.may_read(n.visibility, n.owner, skillhub_read.agent)) x;
   elsif kind = 'document' then
     select to_jsonb(x) into j from (
       select 'document' as kind, d.id::text, d.filename, d.description,
@@ -164,7 +164,7 @@ begin
              d.content_loaded_at::timestamp(0) as text_loaded
       from public.documents d
       where d.id::text = skillhub_read.id
-        and (d.visibility = 'public' or d.owner = skillhub_read.agent)) x;
+        and platform.may_read(d.visibility, d.owner, skillhub_read.agent)) x;
     -- The text, when loaded: whole if it is short, otherwise by pages -- a 300-page manual
     -- is not something to hand a model in one piece, and a citation is a page anyway.
     if j is not null and (j->>'text_missing') = 'false' then
@@ -274,14 +274,27 @@ begin
 end $$;
 
 -- plpgsql, not sql: a SQL function does not allow a parameter in LIMIT.
-create or replace function public.skillhub_activity(max_rows int default 20) returns jsonb
+-- The caller is passed (2026-09-18), because the change log records the TITLE of what was
+-- written, and until now every agent read every title -- a private note's included, and a
+-- team's from the day teams existed. The log still holds them; this is the door being told
+-- who is asking. The caretaker sees all of it, as with everything else.
+drop function if exists public.skillhub_activity(int);
+create or replace function public.skillhub_activity(max_rows int default 20, agent text default null) returns jsonb
 language plpgsql stable security definer set search_path = public, platform as $$
 declare j jsonb;
 begin
-  select coalesce(jsonb_agg(jsonb_build_object('from', from_at, 'agent', agent, 'operation', operation,
+  select coalesce(jsonb_agg(jsonb_build_object('from', from_at, 'agent', who, 'operation', operation,
            'table', table_name, 'count', n, 'what', what)), '[]'::jsonb) into j
-  from (select from_at, agent, operation, table_name, rows as n, what
-        from platform.v_flow limit max_rows) x;
+  from (
+    select min(e.at)::timestamp(0) as from_at, coalesce(e.agent,'(unknown)') as who, e.operation, e.table_name,
+           count(*) as n,
+           case when count(*) = 1 then max(coalesce(e.summary,''))
+                else left(string_agg(distinct coalesce(e.summary,''), ', '), 120) end as what
+    from platform.events e
+    where platform.may_read(e.visibility, e.agent, skillhub_activity.agent)
+    group by date_trunc('minute', e.at), e.agent, e.operation, e.table_name
+    order by 1 desc
+    limit max_rows) x;
   return j;
 end $$;
 
@@ -295,8 +308,12 @@ language sql stable security definer set search_path = public, platform as $$
   select jsonb_build_object(
     'agent', agent,
     'source', 'Verified by the gateway from your API key, not from what you claimed.',
-    'registered', coalesce((select jsonb_build_object('name', name, 'role', role)
+    'registered', coalesce((select jsonb_build_object('name', name, 'role', role, 'team', team)
                             from public.agents where id = agent), '{}'::jsonb),
+    'team', platform.team_of(agent),
+    'team_note', case when platform.team_of(agent) is null
+      then 'No team: you read public rows and your own, and cannot write team rows. The caretaker sets teams in the agents table.'
+      else format('Rows with visibility = team are shared with everyone whose team is %s.', platform.team_of(agent)) end,
     'your_writes', (select coalesce(jsonb_object_agg(table_name, n), '{}'::jsonb)
                     from (select table_name, count(*) n from platform.events
                           where platform.events.agent = skillhub_whoami.agent group by table_name) x));
@@ -306,26 +323,31 @@ $$;
 -- Writing tools. Identity is a parameter the edge function fills from the gateway's
 -- verified header, never something the agent states -- these fail closed without it.
 -- ---------------------------------------------------------------------------
+drop function if exists public.skillhub_write_note(text, text, text, text[], boolean);
 create or replace function public.skillhub_write_note(
   agent text, title text, content text,
-  tags text[] default '{}', private boolean default false) returns jsonb
+  tags text[] default '{}', private boolean default false, visibility text default null) returns jsonb
 language plpgsql security definer set search_path = public, platform as $$
-declare new_id uuid;
+declare new_id uuid; vis text;
 begin
   if agent is null or agent = '' then raise exception 'No agent identity from the gateway.'; end if;
   if title is null or btrim(title) = '' then raise exception 'Title is required.'; end if;
+  vis := platform.visibility_for(agent, visibility, private);
   insert into public.notes (owner, created_by, updated_by, title, content, tags, visibility)
-  values (agent, agent, agent, btrim(title), coalesce(content,''), coalesce(tags,'{}'),
-          case when private then 'private' else 'public' end)
+  values (agent, agent, agent, btrim(title), coalesce(content,''), coalesce(tags,'{}'), vis)
   returning id into new_id;
-  return jsonb_build_object('id', new_id, 'title', btrim(title), 'owner', agent,
-    'visibility', case when private then 'private' else 'public' end,
-    'note', case when private then 'Private notes are never indexed, so nobody can find this by meaning -- including you.' else null end);
+  return jsonb_build_object('id', new_id, 'title', btrim(title), 'owner', agent, 'visibility', vis,
+    'note', case vis
+      when 'private' then 'Private notes are never indexed, so nobody can find this by meaning -- including you.'
+      when 'team' then format('Shared with team %s. Team notes are found by their words, not by meaning.', platform.team_of(agent))
+      else null end);
 end $$;
 
+drop function if exists public.skillhub_publish_skill(text, text, text, text, text, text[], text);
 create or replace function public.skillhub_publish_skill(
   agent text, slug text, name text, content text,
-  description text default '', tags text[] default '{}', version text default '1.0.0') returns jsonb
+  description text default '', tags text[] default '{}', version text default '1.0.0',
+  visibility text default 'public') returns jsonb
 language plpgsql security definer set search_path = public, platform as $$
 declare
   existing_author text;
@@ -381,7 +403,8 @@ begin
   end if;
 
   insert into public.skill_library (slug, name, description, skill_md, version, author_name, tags, visibility, status)
-  values (slug, name, coalesce(description,''), content, version, agent, coalesce(tags,'{}'), 'public', 'published')
+  values (slug, name, coalesce(description,''), content, version, agent, coalesce(tags,'{}'),
+          platform.visibility_for(agent, skillhub_publish_skill.visibility, false), 'published')
   -- ON CONSTRAINT, not (slug, version): the column list resolves against both the table and
   -- this function's parameters, which are called slug and version, and Postgres refuses with
   -- "column reference is ambiguous". This made the tool fail on every call it ever received,
@@ -409,10 +432,11 @@ end $$;
 -- The five-argument overload is dropped first: create or replace with a new defaulted
 -- parameter would leave both, and the tool wrapper resolves by name.
 drop function if exists public.skillhub_register_document(text,text,bigint,text,text,text,text);
+drop function if exists public.skillhub_register_document(text, text, bigint, text, text, text, text, text);
 create or replace function public.skillhub_register_document(
   agent text, filename text, bytes bigint default null, mime_type text default null,
   sha256 text default null, description text default null, source text default null,
-  path text default null) returns jsonb
+  path text default null, visibility text default 'public') returns jsonb
 language plpgsql security definer set search_path = public, platform as $$
 declare new_id uuid; duplicate text; step text;
 begin
@@ -424,8 +448,9 @@ begin
   select d.filename into duplicate from public.documents d
    where skillhub_register_document.sha256 is not null
      and d.sha256 = skillhub_register_document.sha256 limit 1;
-  insert into public.documents (owner, created_by, updated_by, filename, bytes, mime_type, sha256, description, source, bucket, path)
+  insert into public.documents (owner, created_by, updated_by, filename, bytes, mime_type, sha256, description, source, visibility, bucket, path)
   values (agent, agent, agent, filename, bytes, mime_type, sha256, description, source,
+          platform.visibility_for(agent, skillhub_register_document.visibility, false),
           -- bucket is NOT NULL (default 'shared'); an explicit null is not the default.
           -- Found 2026-09-15 on the demo: every registration without a path failed.
           case when path is not null then 'deliveries' else 'shared' end, path)
@@ -621,7 +646,7 @@ begin
   -- The ownership filter is applied, not requested. This is the difference from raw SQL:
   -- an agent cannot forget it, and cannot choose to leave it out.
   if has_owner then
-    wheres := wheres || format('(visibility = %L or owner = %L)', 'public', agent)::text;
+    wheres := wheres || format('platform.may_read(visibility, owner, %L)', agent)::text;
   end if;
 
   foreach col in array coalesce(group_by, '{}') loop
@@ -704,9 +729,7 @@ declare
   inserted   int;
 begin
   if agent is null or agent = '' then raise exception 'No agent identity from the gateway.'; end if;
-  if visibility not in ('public','private') then
-    raise exception 'visibility must be public or private, not %.', visibility;
-  end if;
+  visibility := platform.visibility_for(agent, visibility, false);
   if rows is null or jsonb_typeof(rows) <> 'array' or jsonb_array_length(rows) = 0 then
     raise exception 'Give rows as a list of objects, e.g. [{"name":"ACME","city":"Malmo"}].';
   end if;
@@ -939,9 +962,9 @@ revoke all on function public.skillhub_retire(text,text,text,text,text) from pub
 
 -- The writing tools are not callable by anon or authenticated: they take an identity as a
 -- parameter, and only the edge function knows the verified one.
-revoke all on function public.skillhub_write_note(text,text,text,text[],boolean) from public;
-revoke all on function public.skillhub_publish_skill(text,text,text,text,text,text[],text) from public;
-revoke all on function public.skillhub_register_document(text,text,bigint,text,text,text,text,text) from public;
+revoke all on function public.skillhub_write_note(text,text,text,text[],boolean,text) from public;
+revoke all on function public.skillhub_publish_skill(text,text,text,text,text,text[],text,text) from public;
+revoke all on function public.skillhub_register_document(text,text,bigint,text,text,text,text,text,text) from public;
 grant execute on all functions in schema public to service_role, postgres;
 
 

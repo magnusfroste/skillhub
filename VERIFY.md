@@ -216,6 +216,17 @@ ten-page quality manual: 25,339 characters loaded, 14 chunks headed by page, a S
 question about supplier audits answered with page 8. The condensed skill the agent publishes
 is still the curated layer; this is what it was condensed from, and what an auditor opens.
 
+## 5e. A department's own rows
+
+As the caretaker, give two agents the same word in `public.agents.team` and leave a third
+without one. Ask the first to write a note "for the team". `skillhub_whoami` on the second
+names the team and `skillhub_read`, `skillhub_search`, `skillhub_query` and
+`skillhub_activity` all show the note; on the third none of them do, and `skillhub_similar`
+never does for anyone, because team rows are not indexed by meaning. Ask the third to write a
+team note: refused in words, not stored. `utils/test-seed-on-empty-db.sh` runs this whole
+sequence on a fresh database. A team is a word: the caretaker's typo is the only way to get
+it wrong, and the caveats say so.
+
 ## 6. Ask an agent something you know the answer to
 
 Scripts prove the mechanism. Only an agent proves the store is usable, and the useful test is

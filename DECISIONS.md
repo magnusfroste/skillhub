@@ -813,6 +813,47 @@ to be checked against.
 
 ---
 
+## 30. A third visibility, and one door that decides
+
+**Decided 2026-09-18.** Rows can be `team` as well as `public` and `private`. A team is a
+word in `public.agents.team`, typed by the caretaker; a team row is readable by every agent
+whose word is the same as the owner's. The caretaker reads everything, as before.
+
+**Why now.** ISO 9001 asks who may see a record, and the store had two answers: everyone, or
+the one agent that wrote it. A purchasing note that sales should not read had nowhere to go
+but private, where purchasing's other agent could not read it either. Departments are the
+third answer, and a department is a word, not a mechanism: the same words another system
+uses for its roles can be typed into the column, so "team" means one thing across systems.
+
+**What decided the shape.** The rule *may this agent read this row* existed as the same
+two-clause expression in nine places — the three search branches, four read paths, the
+query tool, the activity log. Adding a third clause in nine places is how one of them gets
+missed, and a team row leaking through the door that was forgotten is exactly the failure
+this is meant to prevent. So the rule became one function, `platform.may_read(visibility,
+owner, agent)`, and every read path calls it. The activity log turned out to be the door that
+was already open: it recorded the *title* of every write, and every agent read every title,
+private ones included. It now takes the caller and asks the same function.
+
+The write side has one door too: `platform.visibility_for(agent, wanted, private)` is what
+every write tool stores. An agent with no team asking for `team` is refused rather than
+stored, because a team row nobody can read is a row that vanished, and the writer would not
+know.
+
+**What is deliberately not done.** Team rows are not indexed by meaning. The rule "nothing
+non-public is indexed" stays as it was, because the vector store has one filter and it is
+the cheap one; a team's knowledge is found by its words and by its owner. If a department
+one day needs meaning search over its own material, that is a separate decision with its
+own cost — a visibility check inside the nearest-neighbour scan is the shape §25 measured at
+28 seconds. And no agent can set a team, its own or anyone's: the agents table has no
+convention columns, which is what keeps every tool out of it (§conventions), and that is
+the whole guarantee. A wrong word in that column is wrong readers, and the caveat says so.
+
+**Measured.** Empty-database test: an agent in the team reads the note, one outside does
+not, the caretaker does; search, query and the activity log answer the same way; the
+indexer never lists it; an agent with no team is refused. The same probe on dev, live.
+
+---
+
 ## What this does not do yet
 
 Named, measured where possible, and deliberately not built:

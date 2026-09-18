@@ -194,7 +194,7 @@ language sql stable as $$
          ts_rank(to_tsvector('swedish', coalesce(s.name,'')||' '||coalesce(s.description,'')||' '||coalesce(s.skill_md,'')), q.tq)
   from platform.v_current_skills s, q
   where true
-    and (s.visibility = 'public' or s.author_name = search.agent)
+    and platform.may_read(s.visibility, s.author_name, search.agent)
     and (to_tsvector('swedish', coalesce(s.name,'')||' '||coalesce(s.description,'')||' '||coalesce(s.skill_md,'')) @@ q.tq
          or s.slug ilike '%'||q.raw||'%')
   union all
@@ -202,7 +202,7 @@ language sql stable as $$
          left(coalesce(n.content,''), 180),
          ts_rank(to_tsvector('swedish', coalesce(n.title,'')||' '||coalesce(n.content,'')), q.tq)
   from public.notes n, q
-  where (n.visibility = 'public' or n.owner = search.agent)
+  where platform.may_read(n.visibility, n.owner, search.agent)
     and n.retired_at is null
     and to_tsvector('swedish', coalesce(n.title,'')||' '||coalesce(n.content,'')) @@ q.tq
   union all
@@ -216,7 +216,7 @@ language sql stable as $$
          greatest(ts_rank(to_tsvector('swedish', coalesce(d.filename,'')||' '||coalesce(d.description,'')), q.tq),
                   case when d.content is not null then ts_rank(d.content_tsv, q.tq) else 0 end)
   from public.documents d, q
-  where (d.visibility = 'public' or d.owner = search.agent)
+  where platform.may_read(d.visibility, d.owner, search.agent)
     and d.retired_at is null
     and (to_tsvector('swedish', coalesce(d.filename,'')||' '||coalesce(d.description,'')) @@ q.tq
          or (d.content is not null and d.content_tsv @@ q.tq))
@@ -323,7 +323,8 @@ begin
                   (select count(*) from public.skill_library x where x.slug = s.slug
                      and x.created_at > now() - (days||' days')::interval) as versions
              from platform.v_current_skills s
-            where exists (select 1 from public.skill_library x where x.slug = s.slug
+            where s.visibility = 'public'   -- the report is pasted to people; a team's or a private skill is not for it
+              and exists (select 1 from public.skill_library x where x.slug = s.slug
                            and x.created_at > now() - (days||' days')::interval)
             order by s.created_at
   loop out_text := out_text || format(E'  %s -- %s (%s%s)\n', r.slug, r.name, r.author_name,

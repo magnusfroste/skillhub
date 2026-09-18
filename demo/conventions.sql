@@ -30,7 +30,7 @@ begin
     create table if not exists public.%1$I (
       id          uuid primary key default gen_random_uuid(),
       owner       text not null,
-      visibility  text not null default 'public' check (visibility in ('public','private')),
+      visibility  text not null default 'public' check (visibility in ('public','team','private')),
       created_by  text not null,
       updated_by  text not null,
       created_at  timestamptz not null default now(),
@@ -44,7 +44,7 @@ begin
     execute format('comment on table public.%I is %L', table_name, description);
   end if;
   execute format('comment on column public.%I.owner is %L', table_name, 'The agent identifier, agent_NN. Set by the agent on insert.');
-  execute format('comment on column public.%I.visibility is %L', table_name, 'public = everyone may read and write, private = the owner only.');
+  execute format('comment on column public.%I.visibility is %L', table_name, 'public = everyone may read, team = agents in the owner''s team (public.agents.team), private = the owner only. The caretaker reads all three.');
   execute format('comment on column public.%I.created_by is %L', table_name, 'Who created the row. Set by the agent.');
   execute format('comment on column public.%I.updated_by is %L', table_name, 'Who last changed the row. Set by the agent on every update.');
 end $$;
@@ -93,6 +93,49 @@ comment on table public.agents is
    It deliberately lacks the convention columns (owner, visibility, created_by, updated_by), and that omission is the only thing keeping agents out of it: skillhub_add_rows refuses a table without them, and no other tool reaches this one. Adding them to make add_rows work here would let agent_02 write its own name and role. Do not.
    Note also that every agent can read it, so a real name here is visible to all of them. A role without a name (agent_05 = purchasing) gives the log its lookup without putting personal data in a shared store.';
 comment on column public.agents.id is 'agent_01 .. agent_10, the same number as MCP_KEY_NN.';
+-- Which team an agent belongs to (2026-09-18): a department, a role, a group -- the same
+-- words another system uses, so that "team" means the same thing across them. Set by the
+-- caretaker in the agents table, like name and role. A row with visibility = 'team' is
+-- readable by every agent whose team equals the owner's. Null means no team: such an agent
+-- reads public rows and its own, and cannot write team rows, because there is no team to
+-- write them to.
+alter table public.agents add column if not exists team text;
+comment on column public.agents.team is 'The agent''s team, free text, set by the caretaker: rows with visibility = team are shared among agents with the same value. Null = no team.';
+
+-- The one predicate every read path asks (2026-09-18). It existed as the same two-clause
+-- expression in nine places, and adding a third clause to nine places is how one of them
+-- gets missed and a team row leaks through the door that was forgotten.
+create schema if not exists platform;   -- also created below; the functions need it now
+create or replace function platform.team_of(agent_id text) returns text
+language sql stable as $$ select a.team from public.agents a where a.id = agent_id $$;
+
+create or replace function platform.may_read(vis text, owner text, agent text) returns boolean
+language sql stable as $$
+  select coalesce(vis, 'public') = 'public'
+      or agent = 'service_role'
+      or (agent is not null and owner = agent)
+      or (vis = 'team' and agent is not null
+          and platform.team_of(owner) is not null
+          and platform.team_of(owner) = platform.team_of(agent))
+$$;
+comment on function platform.may_read(text, text, text) is 'May this agent read a row with this visibility and owner. public: anyone. private: the owner. team: agents in the owner''s team. The caretaker: everything. Every read path asks this; nothing decides it on its own.';
+
+-- And the one place a write tool decides what visibility a new row gets. `team` from an
+-- agent with no team is refused rather than stored: a team row nobody can read is a row
+-- that vanished, and the writer would not know.
+create or replace function platform.visibility_for(agent text, wanted text, private boolean default false) returns text
+language plpgsql stable as $$
+declare v text := coalesce(nullif(btrim(wanted), ''), case when private then 'private' else 'public' end);
+begin
+  if v not in ('public', 'team', 'private') then
+    raise exception 'visibility must be public, team or private, not "%".', v;
+  end if;
+  if v = 'team' and platform.team_of(agent) is null then
+    raise exception 'You (%) are in no team, so there is nobody a team row would be shared with. Write it public or private, or ask the caretaker to set your team in the agents table.', agent;
+  end if;
+  return v;
+end $$;
+comment on function platform.visibility_for(text, text, boolean) is 'The visibility a write tool stores: the one asked for, else private when that flag is set, else public. Refuses team from an agent that has none.';
 comment on column public.agents.name is 'The person''s name, where known.';
 comment on column public.agents.role is 'Free text, e.g. sales, finance, test.';
 insert into public.agents (id) values ('agent_01'),('agent_02'),('agent_03'),('agent_04'),('agent_05'),
@@ -182,15 +225,18 @@ values (0, 'the conventions themselves', $md$---
 
     - Read whole objects with `skillhub_read` rather than working from a search excerpt.
     - The house tools filter on ownership for you: a private row belonging to another agent is
-      simply not there. If you read with `execute_sql` instead, filter yourself:
-      `where visibility = 'public' or owner = '<your identifier>'`.
+      simply not there, and a team row is there only if you are in that team. If you read
+      with `execute_sql` instead, filter yourself: `where platform.may_read(visibility, owner,
+      '<your identifier>')`.
     - Start from `skillhub_overview`. Tables and columns carry comments that explain them.
 
     ## Writing
 
-    - Public is the default. Set `visibility = 'private'` only when the user asks for it.
-      Private rows are not indexed for semantic search, so a private note cannot be found by
-      meaning -- by you or by anyone.
+    - Public is the default. Set `visibility = 'private'` only when the user asks for it,
+      and `visibility = 'team'` when something is for your team alone -- your team is what
+      the caretaker put in the agents table; `skillhub_whoami` says which. Neither private
+      nor team rows are indexed for semantic search: they are found by their words and by
+      their owner, not by meaning. The caretaker reads everything, private included.
     - On insert: fill `owner`, `created_by` and `updated_by` with your identifier.
     - On update: set `updated_by`. Leave `owner` and `created_by` alone.
     - Never change or delete another agent's rows. Public rows may be edited, but write down what

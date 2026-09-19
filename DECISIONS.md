@@ -860,6 +860,56 @@ indexer never lists it; an agent with no team is refused. The same probe on dev,
 
 ---
 
+## 31. A feed does not break, it goes quiet
+
+**Decided and built 2026-09-19.** `platform.v_sources` is now one row per **feed** -- a source
+system loading into a table -- with the rhythm it delivers on and whether the next load is
+overdue. `platform.health()` reads it out as a `feeds` line.
+
+**Why.** The store was always meant to be filled by agents on schedules: an agent with a cron
+job against an ERP's API is an integration, and the store already recorded every load in
+`platform.deliveries` (source, file, hash, inserted, updated). Nothing read that register.
+And the failure mode of a scheduled load is not an error -- it is silence. The job stops, no
+call fails, the table simply stops growing, and a report built on it is quietly wrong for a
+fortnight. Freshness the organisation cannot see is freshness it does not have.
+
+**What decided the shape.**
+
+*Into the view that existed, not beside it.* `v_sources` already promised "start here when
+someone asks whether the data is current"; the cadence columns finish that sentence. A second
+view answering nearly the same question is the parallel surface §28 was written to avoid.
+
+*Keyed on table AND source system.* Two systems feeding one table are two feeds with their own
+freshness, which is the whole point once a store has several connections. The first thing the
+change showed on dev was a real defect in the data: `support_tickets` had been loaded under
+three spellings of the same system. So `skillhub_load_file` now says to keep the name stable,
+because a new spelling is a new feed with no history.
+
+*Three deliveries before anything is a feed.* A table loaded once is a **file**, and reporting
+a one-off import as an overdue feed is how an operating surface becomes noise the caretaker
+learns to skip. The rhythm is inferred from the deliveries themselves -- nothing declared,
+nothing configured, the same posture as the self-configuring indexer -- and `quiet` means the
+last load is more than twice that rhythm old.
+
+*Attention, and a look, never a decide.* There is no call in this store that restarts somebody
+else's cron job: the schedule lives in the agent that runs the load. So the check names the
+feed and the person passes it on. It is never `broken`, because `utils/health.sh` exits 1 only
+on broken and a quiet feed must not fail a cron.
+
+**And loaded rows now carry a visibility.** Until today every loaded row was public whatever
+the loader asked for, so a department's own feed had nowhere to land but in front of
+everybody. `skillhub_load_file` and `skillhub_load_rows` take `visibility`, through the same
+`platform.visibility_for` as every other write. The caretaker is refused `team` with its own
+sentence: a row reaches a team through its **owner**, and a team row owned by `service_role`
+would be readable by nobody at all -- so a department's feed is loaded by the department's
+agent, which is also the only arrangement that stays true when somebody reads the change log.
+
+**What this is not.** It watches feeds that register deliveries. An integration written as
+direct `skillhub_add_rows` calls is invisible to it -- that is a property of the loading
+standard, not a gap to patch here.
+
+---
+
 ## What this does not do yet
 
 Named, measured where possible, and deliberately not built:

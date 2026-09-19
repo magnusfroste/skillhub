@@ -287,12 +287,13 @@ const TOOLS: Tool[] = [
   {
     name: "skillhub_load_file",
     description:
-      "Load an uploaded CSV into a table that ALREADY EXISTS, upserting on a natural key -- this is how next month's export goes in without the caretaker. Reads the file server-side, no row passes through you. Refuses if the table does not exist: then use skillhub_request_structure with the document_id instead, and the caretaker loads it when resolving. Registers the delivery (file, hash, inserted, updated).",
+      "Load an uploaded CSV into a table that ALREADY EXISTS, upserting on a natural key -- this is how next month's export goes in without the caretaker. Reads the file server-side, no row passes through you. Refuses if the table does not exist: then use skillhub_request_structure with the document_id instead, and the caretaker loads it when resolving. Registers the delivery (file, hash, inserted, updated), so the store knows how fresh this table is and can tell when the feed stops arriving. Pass visibility=team for a department's own data.",
     inputSchema: obj({
       document_id: str("The id skillhub_upload_url returned, after the upload finished."),
       target_table: str("An existing table in public that follows the convention."),
       natural_key: str("The column to upsert on, e.g. ticket_no. Must be a column of the table and present in every row."),
-      source_system: str("Where the export comes from, for the delivery register. Optional."),
+      source_system: str("Where the export comes from, for the delivery register: 'Case system', 'Visma', 'the ERP'. Use the SAME name every time -- the store tracks a feed by table and system, infers how often it delivers, and says when one has gone quiet. A new spelling is a new feed with no history."),
+      visibility: str("public (default), team or private. team = only the agents in your team read these rows; that is how a department's own feed lands without being in front of everybody."),
     }, ["document_id", "target_table", "natural_key"]),
     rpc: "__load_file__",
     needsAgent: true,
@@ -580,12 +581,13 @@ async function handle(body: any, agent: string): Promise<unknown | null> {
           const r = await callRpc("skillhub_load_rows", {
             agent, target_table: args.target_table, natural_key: args.natural_key, rows: rows.slice(i, i + 500),
             file_sha256: sha256, filename, source_system: args.source_system ?? null, register: i + 500 >= rows.length,
+            visibility: args.visibility ?? "public",
           }) as any;
           inserted += Number(r.inserted ?? 0); updated += Number(r.updated ?? 0); slices++;
         }
         return rpcOk(id, { content: [{ type: "text", text: JSON.stringify({
           table: args.target_table, natural_key: args.natural_key, file: filename, rows_in_file: rows.length,
-          inserted, updated, slices, delivery_registered: true,
+          inserted, updated, slices, delivery_registered: true, visibility: args.visibility ?? "public",
           note: "Read skillhub_read kind=table for the column comments before you analyse: that is where the reading rules live.",
         }, null, 2) }] });
       }

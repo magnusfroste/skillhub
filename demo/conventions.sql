@@ -131,6 +131,12 @@ begin
     raise exception 'visibility must be public, team or private, not "%".', v;
   end if;
   if v = 'team' and platform.team_of(agent) is null then
+    -- The caretaker has no team on purpose, and a team row it owned would be readable by
+    -- nobody but itself: may_read matches the OWNER's team, and service_role has none. So
+    -- the refusal names the way that works instead of the way that looks like it should.
+    if agent = 'service_role' then
+      raise exception 'A team row belongs to a team through its OWNER, and you have none -- rows you own with visibility = team would be readable by you alone. Have the department''s own agent write or load them, or set the team on the rows afterwards together with an owner that is in it.';
+    end if;
     raise exception 'You (%) are in no team, so there is nobody a team row would be shared with. Write it public or private, or ask the caretaker to set your team in the agents table.', agent;
   end if;
   return v;

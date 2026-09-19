@@ -129,6 +129,7 @@ create or replace function platform.health() returns jsonb
 language plpgsql stable security definer set search_path = platform, public as $$
 declare
   cks jsonb := '[]'::jsonb;
+  feeds_n int; quiet_n int; quiet_txt text;
   verdict text := 'ok';
   e       record;
   last_boot timestamptz; seed_failed text; seed_error text;
@@ -314,6 +315,32 @@ begin
       'run','select * from platform.v_asks where status = ''open'';');
   end if;
 
+  -- What fills this store, and whether it has stopped filling it. A feed does not break --
+  -- it goes quiet, and the report built on it is wrong for a fortnight before anybody
+  -- notices. platform.v_sources infers each feed's rhythm from its own deliveries; this is
+  -- the line that reads it out. A table loaded once or twice is a file, has no rhythm, and
+  -- is never counted here: an operating surface that cries wolf over every one-off import is
+  -- one the caretaker learns to skip.
+  --
+  -- Look only, deliberately. There is no call in this store that restarts somebody else's
+  -- cron job -- the schedule lives in the agent that runs it -- so the honest thing is to
+  -- name the feed and say when it last delivered.
+  begin
+    select count(*) filter (where deliveries >= 3), count(*) filter (where quiet),
+           string_agg(format('%s from %s, last %s', table_name, source_system,
+             to_char(last_loaded, 'YYYY-MM-DD HH24:MI')), '; ' order by last_loaded) filter (where quiet)
+      into feeds_n, quiet_n, quiet_txt from platform.v_sources;
+  exception when undefined_table or undefined_column then feeds_n := 0; quiet_n := 0;
+  end;
+  if feeds_n > 0 then
+    cks := cks || jsonb_build_object('check','feeds',
+      'state', case when quiet_n > 0 then 'attention' else 'ok' end,
+      'detail', case when quiet_n > 0
+        then format('%s feed(s) deliver on a rhythm; %s of them is overdue by more than twice its usual gap: %s. Nothing here restarts it -- the schedule is in the agent that runs the load, so this is for the person to pass on.', feeds_n, quiet_n, quiet_txt)
+        else format('%s feed(s) deliver on a rhythm and none is overdue. A table loaded once or twice is a file, not a feed, and is not counted.', feeds_n) end,
+      'run','select table_name, source_system, last_loaded, typical_gap, quiet from platform.v_sources;');
+  end if;
+
   select count(*) into stale_n from platform.v_going_stale;
   select count(*) into aband_n from platform.v_abandoned_tables;
   select count(*) into dupe_n  from platform.v_duplicates;
@@ -411,7 +438,7 @@ begin
   -- A new VERSION, never an edit -- the same rule load-from-source-system learned on
   -- 2026-09-16: a guard on the current version means a running instance never receives a
   -- correction, and an agent follows the text it has.
-  if not exists (select 1 from public.skill_library where slug = 'caretaker-operations' and version = '1.2.0') then
+  if not exists (select 1 from public.skill_library where slug = 'caretaker-operations' and version = '1.3.0') then
     insert into public.skill_library (slug, name, description, skill_md, version, author_name, license, tags, visibility, status)
     values (
       'caretaker-operations',
@@ -420,7 +447,7 @@ begin
       $md$---
     name: caretaker-operations
     description: Follow this when you hold the service key. Read first, act after; most of what looks like a problem is a question.
-    version: 1.2.0
+    version: 1.3.0
     license: MIT
     ---
 
@@ -447,7 +474,7 @@ begin
     A store that says `ok` needs nothing from you. That is the common case and it is not a
     disappointment.
 
-    ## The five things you actually do
+    ## The six things you actually do
 
     **1. Answer a structure request.** An agent asked for somewhere to put data and is
     waiting; it can see that it is waiting.
@@ -541,6 +568,25 @@ begin
     for the others to read in `who_is_here` and decides nothing -- `team` decides. Team rows
     are not indexed by meaning, like private ones: the team finds them by words and by owner.
 
+    **6. Watch what fills the store.** An agent with a scheduled job against a source system
+    -- an ERP, a case system, a webhook -- is a feed, and the store sees every load:
+
+        select table_name, source_system, last_loaded, typical_gap, quiet from platform.v_sources;
+
+    One row per feed, and a feed is a system loading into a table, so two systems into one
+    table are two rows with their own freshness. After three loads the store knows the rhythm
+    without being told, and `quiet` means the next one is more than twice that late. That is
+    the failure worth watching: a feed rarely breaks, it stops, and the report built on it is
+    wrong for a fortnight before anyone notices.
+
+    You cannot fix a quiet feed from here -- the schedule lives in the agent that runs the
+    load. Name it and pass it on. And keep the `source_system` spelling stable: "Case system"
+    and "Case management system" are two feeds with no history each.
+
+    A feed lands its rows with a visibility like anything else. A department's own data goes
+    in as `visibility = team` by the agent that belongs to the team -- not by you: a team row
+    you own is readable by you alone, because a row reaches a team through its owner.
+
     ## What to leave alone
 
     - **Do not delete rows.** Not notes, not skills, not documents, not table rows. Everything
@@ -562,13 +608,13 @@ begin
     design -- keyword search keeps working when meaning search is down -- so the number that
     moved is usually the only sign there was one.
     $md$,
-      '1.2.0', 'skillhub', 'MIT',
+      '1.3.0', 'skillhub', 'MIT',
       '{caretaker,operations,admin,house-standard}', 'public', 'published'
     );
   end if;
   update public.skill_library
-     set superseded_by = '1.2.0', updated_at = now()
-   where slug = 'caretaker-operations' and version <> '1.2.0' and superseded_by is null;
+     set superseded_by = '1.3.0', updated_at = now()
+   where slug = 'caretaker-operations' and version <> '1.3.0' and superseded_by is null;
 end $do$;
 
 -- It is listed with the other house standards in platform_loading.sql, which owns that section.

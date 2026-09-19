@@ -981,14 +981,19 @@ grant execute on all functions in schema public to service_role, postgres;
 -- table from a request (fields, natural key, the agent's observations as column comments),
 -- resolves the request, and asks the edge function to load the file. See DECISIONS.md 20.
 -- ---------------------------------------------------------------------------
+-- The eight-argument version is dropped rather than replaced: CREATE OR REPLACE cannot
+-- remove an old signature, and three overloads of load_registered_file once made the
+-- caretaker's single call ambiguous on dev. One signature per function, always.
+drop function if exists public.skillhub_load_rows(text,text,text,jsonb,text,text,text,boolean);
 create or replace function public.skillhub_load_rows(
   agent text, target_table text, natural_key text, rows jsonb,
   file_sha256 text default null, filename text default null, source_system text default null,
-  register boolean default true) returns jsonb
+  register boolean default true, visibility text default 'public') returns jsonb
 language plpgsql security definer set search_path = public, platform as $$
 declare
   rel        regclass;
   cols       text[];
+  vis        text;
   have_raw   boolean; have_sha boolean; have_loaded boolean;
   keys       text[];
   r          jsonb;
@@ -997,6 +1002,9 @@ declare
   col_list   text; val_list text; set_list text;
 begin
   if agent is null or agent = '' then raise exception 'No agent identity from the gateway.'; end if;
+  -- Loaded rows were always public until 2026-09-19. A department's feed -- purchasing's
+  -- order lines, support's tickets -- had nowhere to land but in front of everybody.
+  vis := platform.visibility_for(agent, skillhub_load_rows.visibility, false);
   rel := to_regclass('public.' || quote_ident(target_table));
   if rel is null then
     raise exception 'No table "%" in public. Rows are loaded into a table that exists; ask for one with skillhub_request_structure (attach the uploaded file and what you noticed) and the caretaker loads the file when it resolves the request.', target_table;
@@ -1027,7 +1035,7 @@ begin
     set_list := (select string_agg(format('%I = excluded.%I', k, k), ', ') from unnest(keys) k where k <> natural_key);
     execute format('select exists(select 1 from public.%I where %I = %L)', target_table, natural_key, r->>natural_key) into existed;
     execute format(
-      'insert into public.%1$I (owner, created_by, updated_by, %2$s%3$s%4$s%5$s) values (%6$L, %6$L, %6$L, %7$s%8$s%9$s%10$s) '
+      'insert into public.%1$I (owner, created_by, updated_by, visibility, %2$s%3$s%4$s%5$s) values (%6$L, %6$L, %6$L, %16$L, %7$s%8$s%9$s%10$s) '
       'on conflict (%11$I) do update set updated_by = excluded.updated_by%12$s%13$s%14$s%15$s',
       target_table, col_list,
       case when have_raw then ', raw' else '' end,
@@ -1041,7 +1049,8 @@ begin
       case when set_list is not null then ', ' || set_list else '' end,
       case when have_raw then ', raw = excluded.raw' else '' end,
       case when have_sha then ', source_sha256 = excluded.source_sha256' else '' end,
-      case when have_loaded then ', loaded_at = now()' else '' end);
+      case when have_loaded then ', loaded_at = now()' else '' end,
+      vis);
     if existed then upd := upd + 1; else ins := ins + 1; end if;
   end loop;
 
@@ -1051,10 +1060,10 @@ begin
   end if;
   return jsonb_build_object('table', target_table, 'natural_key', natural_key,
     'rows_in_slice', jsonb_array_length(rows), 'inserted', ins, 'updated', upd,
-    'delivery_registered', register);
+    'visibility', vis, 'delivery_registered', register);
 end $$;
-revoke all on function public.skillhub_load_rows(text,text,text,jsonb,text,text,text,boolean) from public;
-grant execute on function public.skillhub_load_rows(text,text,text,jsonb,text,text,text,boolean) to service_role, postgres;
+revoke all on function public.skillhub_load_rows(text,text,text,jsonb,text,text,text,boolean,text) from public;
+grant execute on function public.skillhub_load_rows(text,text,text,jsonb,text,text,text,boolean,text) to service_role, postgres;
 
 -- The caretaker's act: build the table the request asks for, with the agent's observations
 -- as column comments, resolve the request, and hand the file to the loader. Runs as the

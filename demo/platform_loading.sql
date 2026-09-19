@@ -54,17 +54,58 @@ comment on function platform.register_delivery is 'Run after every load. Warns i
 -- ---------------------------------------------------------------------------
 -- 2) Freshness: the question the organisation actually asks.
 -- ---------------------------------------------------------------------------
+-- One row per FEED, and a feed is a source system loading into a table -- not a table.
+-- Keyed on both from 2026-09-19: an agent with a cron job against an ERP is one connection,
+-- and a store filled by several of them (orders from the ERP, tickets from the case system)
+-- collapsed into one row per table would hide exactly the thing the picture is for. Two
+-- systems into one table are two rows here, each with its own freshness.
+--
+-- The cadence columns answer the question nobody asks until it is too late. A feed does not
+-- normally break; it goes QUIET, and a report is wrong for a fortnight before anyone
+-- notices. So the view infers the rhythm from the deliveries themselves -- nothing is
+-- declared, nothing configured, the same posture as the self-configuring indexer -- and
+-- says when the next one is overdue.
+--
+-- Three deliveries is the threshold for having a rhythm at all. Below it this is a FILE
+-- somebody loaded once, and calling a one-off import an overdue feed is how an operating
+-- surface becomes noise.
 create or replace view platform.v_sources as
-select d.target_table as table_name, d.source_system, d.filename,
+with per_feed as (
+  select d.target_table, d.source_system,
+         count(*)                          as deliveries,
+         max(d.at)                         as last_at,
+         -- The typical gap between the last few loads, in hours. Averaged over the gaps
+         -- that exist rather than over the whole history: a feed that ran weekly and now
+         -- runs nightly should be judged on the nightly rhythm.
+         avg(gap)                          as avg_gap
+  from platform.deliveries d
+  left join lateral (
+    select extract(epoch from (d.at - prev.at))/3600 as gap
+    from platform.deliveries prev
+    where prev.target_table = d.target_table and prev.source_system = d.source_system
+      and prev.at < d.at
+    order by prev.at desc limit 1
+  ) g on true
+  group by d.target_table, d.source_system
+)
+select f.target_table as table_name, f.source_system, d.filename,
        d.row_count, d.agent as loaded_by,
-       d.at::timestamp(0) as last_loaded,
-       (now() - d.at) as age,
-       (select count(*) from platform.deliveries x where x.target_table = d.target_table) as deliveries
-from platform.deliveries d
-join lateral (select max(at) t from platform.deliveries y where y.target_table = d.target_table) latest
-  on latest.t = d.at
-order by d.at desc;
-comment on view platform.v_sources is 'The latest load per table: from where, how much, how old. Start here when someone asks whether the data is current.';
+       f.last_at::timestamp(0) as last_loaded,
+       (now() - f.last_at) as age,
+       f.deliveries,
+       case when f.deliveries >= 3 and f.avg_gap is not null
+            then make_interval(secs => round(f.avg_gap * 3600)) end as typical_gap,
+       -- Overdue at twice the rhythm: late enough that it is not jitter, early enough to be
+       -- worth saying. Null typical_gap (too few deliveries to have one) is never quiet.
+       (f.deliveries >= 3 and f.avg_gap is not null
+        and now() - f.last_at > make_interval(secs => round(f.avg_gap * 3600 * 2))) as quiet
+from per_feed f
+join platform.deliveries d
+  on d.target_table = f.target_table and d.source_system = f.source_system and d.at = f.last_at
+order by f.last_at desc;
+comment on view platform.v_sources is 'One row per feed -- a source system loading into a table. From where, how much, how old, how often, and whether the next load is overdue (quiet). Start here when someone asks whether the data is current, or what fills this store. A table loaded fewer than three times is a file, not a feed: it has no rhythm and is never reported quiet.';
+comment on column platform.v_sources.typical_gap is 'The average time between this feed''s loads, inferred from the deliveries themselves. Null until there are three.';
+comment on column platform.v_sources.quiet is 'True when the last load is more than twice the typical gap old: the feed has stopped without failing. Nothing here can restart it -- the schedule lives in the agent that runs it.';
 
 -- Tables holding source-system data with no registered delivery: someone loaded without
 -- saying so.

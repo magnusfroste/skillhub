@@ -399,12 +399,45 @@ check "the indexer never sees it" \
 check "an agent with no team cannot write a team row" \
   "select coalesce((select 'wrote' from (select public.skillhub_write_note('agent_03','No team probe','x', '{}', false, 'team')) z), '')" "ERROR:  You (agent_03) are in no team, so there is nobody a team row would be shared with. Write it public or private, or ask the caretaker to set your team in the agents table."
 check "the caretaker's standard says how to put an agent in a team" \
-  "select version || ':' || (skill_md like '%5. Put an agent in a team%')::text || ':' || (skill_md like '%update public.agents set team%')::text from platform.v_current_skills where slug='caretaker-operations'" "1.2.0:true:true"
+  "select version || ':' || (skill_md like '%5. Put an agent in a team%')::text || ':' || (skill_md like '%6. Watch what fills the store%')::text from platform.v_current_skills where slug='caretaker-operations'" "1.3.0:true:true"
 check "a public note by an agent with a team says so, in case the team was meant" \
   "select ((public.skillhub_write_note('agent_01','Public by a teamed agent','x')->>'note') like 'Public: every agent reads this. You are in team sales%')::text" "true"
 q "delete from public.notes where title='Public by a teamed agent'" >/dev/null
+# Feeds (2026-09-19): a table loaded once is a FILE and must never be reported as an overdue
+# feed -- that is how an operating surface becomes noise. Three deliveries make a rhythm.
+q "insert into platform.deliveries (source_system, target_table, agent, at, row_count) values ('Probe once','notes','service_role', now() - interval '40 days', 5)" >/dev/null
+check "a table loaded once has no rhythm and is never quiet" \
+  "select deliveries::text || ':' || coalesce(typical_gap::text,'-') || ':' || quiet::text from platform.v_sources where source_system='Probe once'" "1:-:false"
+check "and health says nothing about it" \
+  "select coalesce((select 'reported' from jsonb_array_elements(platform.health()->'checks') c where c->>'check'='feeds'), 'silent')" "silent"
+q "insert into platform.deliveries (source_system, target_table, agent, at, row_count) values ('Probe erp','notes','service_role', now() - interval '72 hours', 5),('Probe erp','notes','service_role', now() - interval '48 hours', 5),('Probe erp','notes','service_role', now() - interval '24 hours', 5)" >/dev/null
+check "three loads give a rhythm, and on time is ok" \
+  "select deliveries::text || ':' || typical_gap::text || ':' || quiet::text from platform.v_sources where source_system='Probe erp'" "3:24:00:00:false"
+check "health counts the feed and says nothing is overdue" \
+  "select (c->>'state') || ':' || ((c->>'detail') like '1 feed(s) deliver on a rhythm and none is overdue%')::text from jsonb_array_elements(platform.health()->'checks') c where c->>'check'='feeds'" "ok:true"
+q "update platform.deliveries set at = now() - interval '60 hours' where source_system='Probe erp' and at > now() - interval '30 hours'" >/dev/null
+check "past twice its gap the feed is quiet, and health names it" \
+  "select quiet::text from platform.v_sources where source_system='Probe erp'" "true"
+check "and that is attention, never broken -- a quiet feed must not fail a cron" \
+  "select (c->>'state') || ':' || ((c->>'detail') like '%notes from Probe erp, last%')::text from jsonb_array_elements(platform.health()->'checks') c where c->>'check'='feeds'" "attention:true"
+check "two systems into one table are two feeds, not one" \
+  "select count(*)::text from platform.v_sources where table_name='notes'" "2"
+q "delete from platform.deliveries where source_system like 'Probe %'" >/dev/null
 check "whoami says which team" \
   "select (public.skillhub_whoami('agent_01')->>'team') || ':' || coalesce(public.skillhub_whoami('agent_03')->>'team','none')" "sales:none"
+# Loaded rows were public whatever the loader asked for until 2026-09-19: a department's own
+# feed had nowhere to land. The caretaker is refused with a different sentence, because a
+# team row it OWNED would be readable by nobody at all.
+q "select public.create_shared_table('probe_feed','Probe table for the loaded-rows visibility check')" >/dev/null
+q "alter table public.probe_feed add column order_no text, add column amount text" >/dev/null
+q "select public.skillhub_load_rows('agent_01','probe_feed','order_no','[{\"order_no\":\"A-1\",\"amount\":\"10\"}]'::jsonb,null,null,'Probe ERP',false,'team')" >/dev/null
+check "loaded rows take the visibility the loader asked for" \
+  "select visibility || ':' || owner from public.probe_feed where order_no='A-1'" "team:agent_01"
+check "and the caretaker is told why a team row of its own would reach nobody" \
+  "select coalesce((select 'loaded' from (select public.skillhub_load_rows('service_role','probe_feed','order_no','[{\"order_no\":\"A-2\"}]'::jsonb,null,null,'Probe ERP',false,'team')) z), '')" "ERROR:  A team row belongs to a team through its OWNER, and you have none -- rows you own with visibility = team would be readable by you alone. Have the department's own agent write or load them, or set the team on the rows afterwards together with an owner that is in it."
+check "an outsider counts none of them, the team-mate counts one" \
+  "select (public.skillhub_query('agent_02','probe_feed',array['count(*)'])->'rows'->0->>'count') || ':' || (public.skillhub_query('agent_03','probe_feed',array['count(*)'])->'rows'->0->>'count')" "1:0"
+q "drop table public.probe_feed" >/dev/null
 q "delete from public.notes where title='Sales team probe'" >/dev/null
 q "update public.agents set team = null" >/dev/null
 check "retiring the note works too" \

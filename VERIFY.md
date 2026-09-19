@@ -261,6 +261,23 @@ Two more worth asking once, because each exercises a wall:
 
 ---
 
+## 7. What fills the store, and when it stops
+
+    select table_name, source_system, last_loaded, typical_gap, quiet from platform.v_sources;
+
+One row per feed. Load the same export three times through `skillhub_load_file` and
+`typical_gap` appears without anything being configured; let the next one slip past twice that
+gap and `quiet` turns true and `skillhub_overview` grows a `feeds` line naming it. Two source
+systems into one table are two rows. A table loaded once or twice has no rhythm, is never
+reported quiet, and produces no line at all -- verified on a fresh database, because a
+one-off import reported as an overdue feed is the noise that makes an operating surface
+worthless. The state is `attention`, never `broken`: `utils/health.sh` must not exit 1 because
+somebody's cron job stopped.
+
+Load with `visibility=team` and the rows are the department's: `skillhub_query` counts them
+for a team-mate and not for an outsider. The caretaker cannot load team rows of its own and is
+told why -- a row reaches a team through its owner.
+
 ## When something fails
 
 - `FAILED` in the seed log → the store is incomplete; fix the file, re-run `utils/seed.sh`.

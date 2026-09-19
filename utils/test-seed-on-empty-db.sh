@@ -401,7 +401,7 @@ check "an agent with no team cannot write a team row" \
 check "the caretaker's standard says how to put an agent in a team" \
   "select version || ':' || (skill_md like '%5. Put an agent in a team%')::text || ':' || (skill_md like '%update public.agents set team%')::text from platform.v_current_skills where slug='caretaker-operations'" "1.2.0:true:true"
 check "a public note by an agent with a team says so, in case the team was meant" \
-  "select (public.skillhub_write_note('agent_01','Public by a teamed agent','x')->>'note') like 'Public: every agent reads this. You are in team sales%'" "true"
+  "select ((public.skillhub_write_note('agent_01','Public by a teamed agent','x')->>'note') like 'Public: every agent reads this. You are in team sales%')::text" "true"
 q "delete from public.notes where title='Public by a teamed agent'" >/dev/null
 check "whoami says which team" \
   "select (public.skillhub_whoami('agent_01')->>'team') || ':' || coalesce(public.skillhub_whoami('agent_03')->>'team','none')" "sales:none"

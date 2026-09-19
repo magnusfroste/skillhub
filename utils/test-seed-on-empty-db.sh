@@ -398,6 +398,8 @@ check "the indexer never sees it" \
   "select (count(*) = 0)::text from jsonb_array_elements(public.embed_candidates(1000, 2000)) c where c->>'source'='note' and c->>'id'=(select id::text from public.notes where title='Sales team probe')" "true"
 check "an agent with no team cannot write a team row" \
   "select coalesce((select 'wrote' from (select public.skillhub_write_note('agent_03','No team probe','x', '{}', false, 'team')) z), '')" "ERROR:  You (agent_03) are in no team, so there is nobody a team row would be shared with. Write it public or private, or ask the caretaker to set your team in the agents table."
+check "the caretaker's standard says how to put an agent in a team" \
+  "select version || ':' || (skill_md like '%5. Put an agent in a team%')::text || ':' || (skill_md like '%update public.agents set team%')::text from platform.v_current_skills where slug='caretaker-operations'" "1.2.0:true:true"
 check "whoami says which team" \
   "select (public.skillhub_whoami('agent_01')->>'team') || ':' || coalesce(public.skillhub_whoami('agent_03')->>'team','none')" "sales:none"
 q "delete from public.notes where title='Sales team probe'" >/dev/null

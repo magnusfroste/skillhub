@@ -411,7 +411,7 @@ begin
   -- A new VERSION, never an edit -- the same rule load-from-source-system learned on
   -- 2026-09-16: a guard on the current version means a running instance never receives a
   -- correction, and an agent follows the text it has.
-  if not exists (select 1 from public.skill_library where slug = 'caretaker-operations' and version = '1.1.0') then
+  if not exists (select 1 from public.skill_library where slug = 'caretaker-operations' and version = '1.2.0') then
     insert into public.skill_library (slug, name, description, skill_md, version, author_name, license, tags, visibility, status)
     values (
       'caretaker-operations',
@@ -420,7 +420,7 @@ begin
       $md$---
     name: caretaker-operations
     description: Follow this when you hold the service key. Read first, act after; most of what looks like a problem is a question.
-    version: 1.1.0
+    version: 1.2.0
     license: MIT
     ---
 
@@ -447,7 +447,7 @@ begin
     A store that says `ok` needs nothing from you. That is the common case and it is not a
     disappointment.
 
-    ## The four things you actually do
+    ## The five things you actually do
 
     **1. Answer a structure request.** An agent asked for somewhere to put data and is
     waiting; it can see that it is waiting.
@@ -525,6 +525,22 @@ begin
     itself and takes them next run. If it repeats, the endpoint is smaller than the store
     thinks: `sh utils/check-embedder.sh <url> <model>` from the host says what it is.
 
+    **5. Put an agent in a team.** Rows can be `team` as well as public and private: a team
+    row is read by every agent whose word in `public.agents.team` is the same as the
+    owner's. The word is the whole mechanism, and only you can write it -- the agents table
+    has no convention columns, so no tool reaches it, and that is what keeps an agent from
+    putting itself in a team. An agent with no team reads public rows and its own, and is
+    refused if it tries to write a team row; `skillhub_whoami` tells it to ask you.
+
+        update public.agents set team = 'sales', name = 'Anna', role = 'sales, northern region'
+         where id = 'agent_02';
+
+    Use the words the company's other systems use. Beside FlowWink those are its functional
+    roles: sales, hr, accounting, support, warehouse, marketing, purchasing, projects. Same
+    word, same team; a typo is a different team, and nothing warns. `role` is a description
+    for the others to read in `who_is_here` and decides nothing -- `team` decides. Team rows
+    are not indexed by meaning, like private ones: the team finds them by words and by owner.
+
     ## What to leave alone
 
     - **Do not delete rows.** Not notes, not skills, not documents, not table rows. Everything
@@ -546,13 +562,13 @@ begin
     design -- keyword search keeps working when meaning search is down -- so the number that
     moved is usually the only sign there was one.
     $md$,
-      '1.1.0', 'skillhub', 'MIT',
+      '1.2.0', 'skillhub', 'MIT',
       '{caretaker,operations,admin,house-standard}', 'public', 'published'
     );
   end if;
   update public.skill_library
-     set superseded_by = '1.1.0', updated_at = now()
-   where slug = 'caretaker-operations' and version <> '1.1.0' and superseded_by is null;
+     set superseded_by = '1.2.0', updated_at = now()
+   where slug = 'caretaker-operations' and version <> '1.2.0' and superseded_by is null;
 end $do$;
 
 -- It is listed with the other house standards in platform_loading.sql, which owns that section.

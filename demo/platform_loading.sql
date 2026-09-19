@@ -70,23 +70,32 @@ comment on function platform.register_delivery is 'Run after every load. Warns i
 -- somebody loaded once, and calling a one-off import an overdue feed is how an operating
 -- surface becomes noise.
 create or replace view platform.v_sources as
-with per_feed as (
-  select d.target_table, d.source_system,
-         count(*)                          as deliveries,
-         max(d.at)                         as last_at,
-         -- The typical gap between the last few loads, in hours. Averaged over the gaps
-         -- that exist rather than over the whole history: a feed that ran weekly and now
-         -- runs nightly should be judged on the nightly rhythm.
-         avg(gap)                          as avg_gap
+with gaps as (
+  select d.target_table, d.source_system, d.at,
+         extract(epoch from (d.at - lag(d.at) over w))/3600 as gap,
+         row_number() over (partition by d.target_table, d.source_system order by d.at desc) as recency
   from platform.deliveries d
-  left join lateral (
-    select extract(epoch from (d.at - prev.at))/3600 as gap
-    from platform.deliveries prev
-    where prev.target_table = d.target_table and prev.source_system = d.source_system
-      and prev.at < d.at
-    order by prev.at desc limit 1
-  ) g on true
-  group by d.target_table, d.source_system
+  window w as (partition by d.target_table, d.source_system order by d.at)
+),
+per_feed as (
+  select g.target_table, g.source_system,
+         count(*)      as deliveries,
+         max(g.at)     as last_at,
+         -- The rhythm, in hours: the MEDIAN of the five most recent gaps.
+         --
+         -- Not the whole history, because a feed that ran weekly for a year and nightly for a
+         -- week would average out at a week, and a stopped nightly feed would then stay quiet
+         -- for a fortnight -- precisely the failure this view exists to catch. Judge it on
+         -- what it does now.
+         --
+         -- And the median, not the average, because the five most recent gaps include the
+         -- transition: 24, 24, 24, 24 and one of 216 averages to 62 hours, so the check would
+         -- wait two and a half days for a nightly feed. The median of the same five is 24.
+         -- Same reason a missed run or a backfill burst must not move the rhythm.
+         percentile_cont(0.5) within group (order by g.gap)
+           filter (where g.recency <= 5) as avg_gap
+  from gaps g
+  group by g.target_table, g.source_system
 )
 select f.target_table as table_name, f.source_system, d.filename,
        d.row_count, d.agent as loaded_by,

@@ -340,6 +340,9 @@ begin
     'note', case vis
       when 'private' then 'Private notes are never indexed, so nobody can find this by meaning -- including you.'
       when 'team' then format('Shared with team %s. Team notes are found by their words, not by meaning.', platform.team_of(agent))
+      -- Measured 2026-09-19: told "write a note for the team", an agent in team sales wrote
+      -- it public. Nothing had said which it was in, or that the other value existed.
+      when platform.team_of(agent) is not null then format('Public: every agent reads this. You are in team %s -- if the user meant it for the team, retire this and write it again with visibility = team.', platform.team_of(agent))
       else null end);
 end $$;
 

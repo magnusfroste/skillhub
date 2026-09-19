@@ -177,7 +177,7 @@ const TOOLS: Tool[] = [
         content: str("Body text, markdown allowed"),
         tags: { type: "array", items: { type: "string" }, description: "Free tags for search" },
         private: { type: "boolean", description: "True only when the user explicitly asked for it", default: false },
-        visibility: str("public (default), team or private. team = readable by the agents in your team (skillhub_whoami says which); refused if you have none. Neither team nor private notes are indexed by meaning."),
+        visibility: str("public (default), team or private. Pass team when the user says it is for the team, the department or 'us' -- it is then readable by the agents in your team only (skillhub_whoami says which; refused if you have none). Neither team nor private notes are indexed by meaning."),
       },
       ["title", "content"],
     ),

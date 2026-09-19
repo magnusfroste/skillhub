@@ -400,6 +400,9 @@ check "an agent with no team cannot write a team row" \
   "select coalesce((select 'wrote' from (select public.skillhub_write_note('agent_03','No team probe','x', '{}', false, 'team')) z), '')" "ERROR:  You (agent_03) are in no team, so there is nobody a team row would be shared with. Write it public or private, or ask the caretaker to set your team in the agents table."
 check "the caretaker's standard says how to put an agent in a team" \
   "select version || ':' || (skill_md like '%5. Put an agent in a team%')::text || ':' || (skill_md like '%update public.agents set team%')::text from platform.v_current_skills where slug='caretaker-operations'" "1.2.0:true:true"
+check "a public note by an agent with a team says so, in case the team was meant" \
+  "select (public.skillhub_write_note('agent_01','Public by a teamed agent','x')->>'note') like 'Public: every agent reads this. You are in team sales%'" "true"
+q "delete from public.notes where title='Public by a teamed agent'" >/dev/null
 check "whoami says which team" \
   "select (public.skillhub_whoami('agent_01')->>'team') || ':' || coalesce(public.skillhub_whoami('agent_03')->>'team','none')" "sales:none"
 q "delete from public.notes where title='Sales team probe'" >/dev/null

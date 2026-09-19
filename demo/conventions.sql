@@ -100,7 +100,7 @@ comment on column public.agents.id is 'agent_01 .. agent_10, the same number as 
 -- reads public rows and its own, and cannot write team rows, because there is no team to
 -- write them to.
 alter table public.agents add column if not exists team text;
-comment on column public.agents.team is 'The agent''s team, free text, set by the caretaker: rows with visibility = team are shared among agents with the same value. Null = no team. Use the words the company''s other systems use; FlowWink''s functional roles are sales, hr, accounting, support, warehouse, marketing, purchasing, projects, and an instance run beside one should use those.';
+comment on column public.agents.team is 'The column that decides; role is only a description. The agent''s team, free text, set by the caretaker: rows with visibility = team are shared among agents with the same value. Null = no team. Use the words the company''s other systems use; FlowWink''s functional roles are sales, hr, accounting, support, warehouse, marketing, purchasing, projects, and an instance run beside one should use those.';
 
 -- The one predicate every read path asks (2026-09-18). It existed as the same two-clause
 -- expression in nine places, and adding a third clause to nine places is how one of them
@@ -137,7 +137,7 @@ begin
 end $$;
 comment on function platform.visibility_for(text, text, boolean) is 'The visibility a write tool stores: the one asked for, else private when that flag is set, else public. Refuses team from an agent that has none.';
 comment on column public.agents.name is 'The person''s name, where known.';
-comment on column public.agents.role is 'Free text, e.g. sales, finance, test.';
+comment on column public.agents.role is 'What this person does, in words, for the others to read in who_is_here: "sales, northern region", "system -- bulk loading, migrations, tidying". Decides nothing. The column that decides who reads a team row is team.';
 insert into public.agents (id) values ('agent_01'),('agent_02'),('agent_03'),('agent_04'),('agent_05'),
   ('agent_06'),('agent_07'),('agent_08'),('agent_09'),('agent_10')
 on conflict (id) do nothing;

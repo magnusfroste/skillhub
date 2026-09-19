@@ -100,7 +100,7 @@ comment on column public.agents.id is 'agent_01 .. agent_10, the same number as 
 -- reads public rows and its own, and cannot write team rows, because there is no team to
 -- write them to.
 alter table public.agents add column if not exists team text;
-comment on column public.agents.team is 'The agent''s team, free text, set by the caretaker: rows with visibility = team are shared among agents with the same value. Null = no team.';
+comment on column public.agents.team is 'The agent''s team, free text, set by the caretaker: rows with visibility = team are shared among agents with the same value. Null = no team. Use the words the company''s other systems use; FlowWink''s functional roles are sales, hr, accounting, support, warehouse, marketing, purchasing, projects, and an instance run beside one should use those.';
 
 -- The one predicate every read path asks (2026-09-18). It existed as the same two-clause
 -- expression in nine places, and adding a third clause to nine places is how one of them

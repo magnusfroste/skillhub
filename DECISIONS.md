@@ -824,6 +824,12 @@ the one agent that wrote it. A purchasing note that sales should not read had no
 but private, where purchasing's other agent could not read it either. Departments are the
 third answer, and a department is a word, not a mechanism: the same words another system
 uses for its roles can be typed into the column, so "team" means one thing across systems.
+The words to borrow are FlowWink's eight functional roles — `sales`, `hr`, `accounting`,
+`support`, `warehouse`, `marketing`, `purchasing`, `projects` — its role matrix
+(`role_module_access`) decides which *modules* each of those may open, and it deliberately
+never restricts *rows* ("horizontal — never restricted", its own words). A team row here is
+that horizontal axis, for the one store where it is needed: an agent's notes and documents
+are the department's, not the company's, and FlowWink has no such thing to gate.
 
 **What decided the shape.** The rule *may this agent read this row* existed as the same
 two-clause expression in nine places — the three search branches, four read paths, the

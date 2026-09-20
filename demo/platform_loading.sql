@@ -109,16 +109,16 @@ create or replace function public.skillhub_record_sync(
   errors bigint default null, watermark text default null, run_id text default null,
   comment text default null) returns jsonb
 language plpgsql security definer set search_path = public, platform as $$
-declare msg text; vis boolean;
+declare msg text;
 begin
+  -- The identity is the one Kong verified and put in X-Consumer-Username; the caller cannot
+  -- forge it, so nothing here re-checks it against public.agents. An earlier draft did, which
+  -- made the caretaker's own journal depend on a row that exists for an unrelated reason --
+  -- service_role is listed in agents so that who_is_here shows it.
   if agent is null or agent = '' then raise exception 'No agent identity from the gateway.'; end if;
   if to_regclass('public.'||quote_ident(target_table)) is null then
     raise exception 'No table "%" in public. Record a sync against the table it wrote to; if there is none yet, the rows had nowhere to go and that is the thing to report.', target_table;
   end if;
-  -- Only against a table the caller may write to. The register says who filled a table and
-  -- anybody reading it takes that as fact, so it is not a place to leave somebody else's name.
-  select exists (select 1 from public.agents a where a.id = agent) into vis;
-  if not vis then raise exception 'Unknown agent "%".', agent; end if;
   msg := platform.register_delivery(source_system, target_table, agent, null, null,
            inserted, updated, comment, source_model, run_id, rows_read, skipped, errors, watermark);
   return jsonb_build_object('recorded', msg, 'table', target_table, 'source_system', source_system,

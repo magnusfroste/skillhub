@@ -435,6 +435,10 @@ check "an unmoved watermark is named as an idle sync, not a broken one" \
   "select (public.skillhub_record_sync('agent_01','Odoo','notes','crm.lead',39,0,0,39,0,'2026-09-19 23:28:29+00','run-b')->>'recorded') like '%the watermark has not moved from 2026-09-19 23:28:29+00: the source had nothing newer%'" "t"
 check "a sync against a table that does not exist says what that means" \
   "select coalesce((select 'recorded' from (select public.skillhub_record_sync('agent_01','Odoo','no_such_table','crm.lead')) z), '')" "ERROR:  No table \"no_such_table\" in public. Record a sync against the table it wrote to; if there is none yet, the rows had nowhere to go and that is the thing to report."
+# The caller that matters for a mirror IS the caretaker, and an earlier draft refused it by
+# re-checking the identity against public.agents -- a row that exists for a different reason.
+check "the caretaker can record its own run" \
+  "select (public.skillhub_record_sync('service_role','Odoo','notes','res.partner',36,36,0,0,0,'2026-09-20','run-c') ? 'recorded')::text" "true"
 check "the run journal tells the agent what a note is for instead" \
   "select ((public.skillhub_record_sync('agent_01','Odoo','notes','crm.tag',8,0,0,8,0,null,'run-b')->>'next') like '%not in a note%')::text" "true"
 q "delete from platform.deliveries where source_system='Odoo'" >/dev/null

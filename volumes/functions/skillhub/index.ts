@@ -299,6 +299,26 @@ const TOOLS: Tool[] = [
     needsAgent: true,
   },
   {
+    name: "skillhub_record_sync",
+    description:
+      "Record what one run of a scheduled load did: rows read, inserted, updated, skipped, errors, the watermark you reached, and a run id. One call per target table, so a pass over twenty models is twenty calls sharing the run id. THIS IS WHERE A RUN JOURNAL GOES -- not in a note. The store reads it to say how fresh each feed is and to notice when one stops arriving; it cannot see a note. Keep the source_system spelling identical between runs or you create a second feed with no history. Notes are for what you LEARNED about the source; a skill is for a procedure the next integration should follow.",
+    inputSchema: obj({
+      source_system: str("The system the data came from, spelled the same every run: 'Odoo', 'Visma', 'the case system'."),
+      target_table: str("The table in public this load wrote to. It must exist."),
+      source_model: str("What the source calls this data: crm.lead, sale.order, tickets."),
+      rows_read: { type: "integer", description: "How many the source offered." },
+      inserted: { type: "integer", description: "New rows written." },
+      updated: { type: "integer", description: "Existing rows changed." },
+      skipped: { type: "integer", description: "Read and deliberately not written, because nothing had changed. A healthy incremental sync skips nearly everything." },
+      errors: { type: "integer", description: "Rows that failed. Zero is worth recording too." },
+      watermark: str("The high-water mark you reached, as the source states it: the newest write_date, a sequence, a timestamp. The next run asks for what is newer."),
+      run_id: str("One id for the whole pass, so the models synchronised together can be read as one run."),
+      comment: str("One line, if something about THIS run needs saying. Not the whole journal -- the numbers are the journal."),
+    }, ["source_system", "target_table"]),
+    rpc: "skillhub_record_sync",
+    needsAgent: true,
+  },
+  {
     name: "skillhub_retire",
     description:
       "Retire something of YOUR OWN that no longer applies: a skill, a note or a document record. Requires a reason -- whoever finds it next needs to know why it stopped applying. Nothing is deleted: retired content leaves search but stays readable, because a real delete here cannot be undone by anyone. You cannot retire another agent's work; publish a better version under your own name instead.",

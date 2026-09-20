@@ -75,8 +75,8 @@ check "the index-on-write trigger is installed" \
 # tool of its own -- the loader calls it. Counting SQL, not tools, is what this database
 # receipt can verify.
 # skillhub_load_text, like upload_url and load_file, lives in the MCP server: twenty here.
-check "the twenty skillhub_ functions exist" \
-  "select count(distinct proname) from pg_proc where proname like 'skillhub\\_%'" "20"
+check "every skillhub_ function the gateway offers exists" \
+  "select count(distinct proname) from pg_proc where proname like 'skillhub\\_%'" "21"
 check "rules are readable" \
   "select (public.skillhub_rules() ? 'placement_rule')::text" "true"
 check "overview answers" \
@@ -423,6 +423,34 @@ check "and that is attention, never broken -- a quiet feed must not fail a cron"
 check "two systems into one table are two feeds, not one" \
   "select count(*)::text from platform.v_sources where table_name='notes'" "2"
 q "delete from platform.deliveries where source_system like 'Probe %'" >/dev/null
+# A run journal has a home (2026-09-20). Before this a delivery was file-shaped, so an agent
+# mirroring an API had nowhere to record what a run did and wrote six notes instead -- and its
+# twelve tables were invisible to the freshness view because nothing was registered.
+q "select public.skillhub_record_sync('agent_01','Odoo','notes','crm.lead',39,2,1,36,0,'2026-09-19 23:28:29+00','run-a','first pass')" >/dev/null
+check "a sync records itself as a delivery, not a note" \
+  "select source_model||':'||rows_read::text||':'||skipped::text||':'||coalesce(watermark,'-')||':'||coalesce(run_id,'-') from platform.deliveries where source_system='Odoo'" "crm.lead:39:36:2026-09-19 23:28:29+00:run-a"
+check "and that makes it a feed the freshness view can see" \
+  "select source_system||':'||deliveries::text from platform.v_sources where source_system='Odoo'" "Odoo:1"
+check "an unmoved watermark is named as an idle sync, not a broken one" \
+  "select (public.skillhub_record_sync('agent_01','Odoo','notes','crm.lead',39,0,0,39,0,'2026-09-19 23:28:29+00','run-b')->>'recorded') like '%the watermark has not moved from 2026-09-19 23:28:29+00: the source had nothing newer%'" "t"
+check "a sync against a table that does not exist says what that means" \
+  "select coalesce((select 'recorded' from (select public.skillhub_record_sync('agent_01','Odoo','no_such_table','crm.lead')) z), '')" "ERROR:  No table \"no_such_table\" in public. Record a sync against the table it wrote to; if there is none yet, the rows had nowhere to go and that is the thing to report."
+check "the run journal tells the agent what a note is for instead" \
+  "select ((public.skillhub_record_sync('agent_01','Odoo','notes','crm.tag',8,0,0,8,0,null,'run-b')->>'next') like '%not in a note%')::text" "true"
+q "delete from platform.deliveries where source_system='Odoo'" >/dev/null
+# The caretaker's own queue is counted apart: nineteen requests filed to itself read as
+# nineteen blocked colleagues until 2026-09-20.
+q "insert into platform.structure_requests (requested_by, purpose, fields, status) values ('service_role','My own queue, filed while mirroring a CRM','[\"a\",\"b\"]'::jsonb,'open')" >/dev/null
+check "the caretaker's own request is not reported as somebody waiting" \
+  "select (c->>'state')||':'||((c->>'detail') like '%All 1 are your own queue%')::text from jsonb_array_elements(platform.health()->'checks') c where c->>'check'='requests waiting on you'" "ok:true"
+q "insert into platform.structure_requests (requested_by, purpose, fields, status) values ('agent_02','A colleague who is actually blocked','[\"a\"]'::jsonb,'open')" >/dev/null
+check "and a real one is told apart from it" \
+  "select ((c->>'detail') like '%1 from agents, who are blocked%1 are your own queue%')::text from jsonb_array_elements(platform.health()->'checks') c where c->>'check'='requests waiting on you'" "true"
+q "delete from platform.structure_requests where purpose like '%own queue%' or purpose like '%actually blocked%'" >/dev/null
+check "the mirror standard is published and says where a run journal goes" \
+  "select version||':'||(skill_md like '%Do not write the run journal as a note%')::text||':'||(skill_md like '%rows read - inserted - updated = skipped%')::text from platform.v_current_skills where slug='mirror-a-live-system'" "1.0.0:true:true"
+check "and the conventions skill lists it among the house standards" \
+  "select (skill_md like '%mirror-a-live-system%')::text from platform.v_current_skills where slug='store-conventions'" "true"
 check "whoami says which team" \
   "select (public.skillhub_whoami('agent_01')->>'team') || ':' || coalesce(public.skillhub_whoami('agent_03')->>'team','none')" "sales:none"
 # Loaded rows were public whatever the loader asked for until 2026-09-19: a department's own

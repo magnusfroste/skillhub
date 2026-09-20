@@ -129,7 +129,7 @@ create or replace function platform.health() returns jsonb
 language plpgsql stable security definer set search_path = platform, public as $$
 declare
   cks jsonb := '[]'::jsonb;
-  feeds_n int; quiet_n int; quiet_txt text;
+  feeds_n int; quiet_n int; quiet_txt text; own_n int;
   verdict text := 'ok';
   e       record;
   last_boot timestamptz; seed_failed text; seed_error text;
@@ -292,12 +292,22 @@ begin
 
   -- Work waiting on a person. An agent that asked for a table is blocked until this moves,
   -- and it can see that it is blocked, which makes the wait its own kind of cost.
-  select count(*), coalesce(max(extract(epoch from (now() - at))/86400), 0)
-    into open_n, open_days from platform.structure_requests where status = 'open';
+  --
+  -- The caretaker's own requests are counted apart from 2026-09-20. Told to mirror a CRM, it
+  -- filed nineteen requests to itself and then waited -- for itself -- because the request
+  -- flow is "an agent asks, the caretaker decides" and it was both. The list is a useful
+  -- queue and stays; the count simply stops claiming that nineteen colleagues are blocked,
+  -- since only one of those two situations is somebody else's day held up.
+  select count(*), coalesce(max(extract(epoch from (now() - at))/86400), 0),
+         count(*) filter (where requested_by = 'service_role')
+    into open_n, open_days, own_n from platform.structure_requests where status = 'open';
   if open_n > 0 then
     cks := cks || jsonb_build_object('check','requests waiting on you',
-      'state', case when open_days > 3 then 'attention' else 'ok' end,
-      'detail', format('%s open, the oldest %s day(s). The agent that asked sees this in skillhub_overview and waits.', open_n, round(open_days,1)),
+      'state', case when open_n - own_n > 0 and open_days > 3 then 'attention' else 'ok' end,
+      'detail', format('%s open, the oldest %s day(s).%s', open_n, round(open_days,1),
+        case when own_n = open_n then format(' All %s are your own queue -- nobody else is waiting on them, and nobody else will resolve them either: decide, build, and resolve, or decline your own request with the reason.', own_n)
+             when own_n > 0 then format(' %s from agents, who are blocked until this moves and can see that they are; %s are your own queue.', open_n - own_n, own_n)
+             else ' The agent that asked sees this in skillhub_overview and waits.' end),
       'run','select id, requested_by, purpose, natural_key, document_id from platform.v_structure_requests where status = ''open'';');
   end if;
 

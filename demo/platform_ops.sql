@@ -348,7 +348,7 @@ begin
       'detail', case when quiet_n > 0
         then format('%s feed(s) deliver on a rhythm; %s of them is overdue by more than twice its usual gap: %s. Nothing here restarts it -- the schedule is in the agent that runs the load, so this is for the person to pass on.', feeds_n, quiet_n, quiet_txt)
         else format('%s feed(s) deliver on a rhythm and none is overdue. A table loaded once or twice is a file, not a feed, and is not counted.', feeds_n) end,
-      'run','select table_name, source_system, last_loaded, typical_gap, quiet from platform.v_sources;');
+      'run','select table_name, source_system, source_model, last_loaded, watermark, typical_gap, quiet from platform.v_sources;');
   end if;
 
   select count(*) into stale_n from platform.v_going_stale;
@@ -448,7 +448,7 @@ begin
   -- A new VERSION, never an edit -- the same rule load-from-source-system learned on
   -- 2026-09-16: a guard on the current version means a running instance never receives a
   -- correction, and an agent follows the text it has.
-  if not exists (select 1 from public.skill_library where slug = 'caretaker-operations' and version = '1.3.0') then
+  if not exists (select 1 from public.skill_library where slug = 'caretaker-operations' and version = '1.4.0') then
     insert into public.skill_library (slug, name, description, skill_md, version, author_name, license, tags, visibility, status)
     values (
       'caretaker-operations',
@@ -457,7 +457,7 @@ begin
       $md$---
     name: caretaker-operations
     description: Follow this when you hold the service key. Read first, act after; most of what looks like a problem is a question.
-    version: 1.3.0
+    version: 1.4.0
     license: MIT
     ---
 
@@ -581,13 +581,19 @@ begin
     **6. Watch what fills the store.** An agent with a scheduled job against a source system
     -- an ERP, a case system, a webhook -- is a feed, and the store sees every load:
 
-        select table_name, source_system, last_loaded, typical_gap, quiet from platform.v_sources;
+        select table_name, source_system, source_model, last_loaded, watermark, typical_gap, quiet
+          from platform.v_sources;
 
     One row per feed, and a feed is a system loading into a table, so two systems into one
     table are two rows with their own freshness. After three loads the store knows the rhythm
     without being told, and `quiet` means the next one is more than twice that late. That is
     the failure worth watching: a feed rarely breaks, it stops, and the report built on it is
     wrong for a fortnight before anyone notices.
+
+    A load through skillhub_load_file registers itself. An agent syncing from an API records
+    its own run with `skillhub_record_sync` -- one call per table per run -- and the house
+    standard for that work is `mirror-a-live-system`. A run journal written as notes is the
+    one mistake to look for: the numbers belong in the register, where this view can read them.
 
     You cannot fix a quiet feed from here -- the schedule lives in the agent that runs the
     load. Name it and pass it on. And keep the `source_system` spelling stable: "Case system"
@@ -618,13 +624,13 @@ begin
     design -- keyword search keeps working when meaning search is down -- so the number that
     moved is usually the only sign there was one.
     $md$,
-      '1.3.0', 'skillhub', 'MIT',
+      '1.4.0', 'skillhub', 'MIT',
       '{caretaker,operations,admin,house-standard}', 'public', 'published'
     );
   end if;
   update public.skill_library
-     set superseded_by = '1.3.0', updated_at = now()
-   where slug = 'caretaker-operations' and version <> '1.3.0' and superseded_by is null;
+     set superseded_by = '1.4.0', updated_at = now()
+   where slug = 'caretaker-operations' and version <> '1.4.0' and superseded_by is null;
 end $do$;
 
 -- It is listed with the other house standards in platform_loading.sql, which owns that section.

@@ -910,6 +910,56 @@ standard, not a gap to patch here.
 
 ---
 
+## 32. Watching the caretaker mirror a CRM
+
+**2026-09-20.** The caretaker was given one instruction -- connect to a CRM and make the store
+a read-only mirror of part of it -- and left alone overnight. What it did is the best evidence
+this repository has about its own design, so it is written down as found.
+
+**It needed nothing new.** It authenticated over JSON-RPC, inventoried twenty models, chose
+four domains, built twelve tables through `create_shared_table` -- every one following the
+convention -- kept the source's own identifiers as the key, and added columns the CSV standard
+never mentions: `source_model`, `extraction_run_id`, `extracted_at`, `raw` as jsonb, and the
+source's `write_date` as a watermark it then checked against the source on the next run. No new
+tool, no new permission, no code. That is the claim this store makes, tested by somebody who
+was not told how.
+
+**Three things the store got wrong, all of them about seeing rather than doing.**
+
+*A delivery was file-shaped.* `platform.deliveries` had `filename` and `file_sha256`, because
+every load until then had been an export somebody uploaded. A mirror has no file -- it has a
+model, a run, a watermark, and rows it read and deliberately did not write. So the caretaker
+wrote its run journal as **notes**: six of them in seventeen minutes, each embedded at a cost,
+each competing with real knowledge in search. It knew what it was doing, too; one of them ends
+"public status note, no secrets". The register now has those columns, and
+`skillhub_record_sync` hands it to the agent that knows the numbers. Same grain as before -- one
+row per table per load -- so `v_sources` and the feeds check needed no change at all.
+
+*Nothing was registered, so nothing was visible.* Twelve freshly filled tables and an empty
+delivery register: the feeds line built the day before watched nothing, and the store could not
+answer what fills it. The gap was named as theoretical in §31 twenty hours earlier. It took one
+real integration to become the main finding.
+
+*An idle sync and a broken one looked identical.* A healthy incremental run reads 39 and writes
+0, because the watermark did its job. So does a run against a source that has stopped
+answering. The register now keeps the watermark and says when it has not moved.
+
+**And one thing that was neither the store's fault nor a mistake, exactly.** Nineteen structure
+requests, all filed by the caretaker to itself, and a note titled "Approval: continue the
+read-only mirror" -- also written by itself. Being both the agent that needs a table and the
+only one who can build it, it simulated the approval loop the request flow implies. The flow
+stays as it is; `platform.health()` now counts its own queue apart, so nineteen notes-to-self
+stop reading as nineteen blocked colleagues, and the `mirror-a-live-system` standard says it
+plainly: a request you filed and did not resolve is not deliberation, it is a stall, and nobody
+else is coming.
+
+**The shape it invented is now the house standard.** `mirror-a-live-system` 1.0.0 carries what
+it got right and what it got wrong, dated, the same way `load-from-source-system` carries the
+quality register an agent brought in. That is the intended way this library grows: an agent
+solves something, and the solution becomes what the next one starts from.
+
+---
+
 ## What this does not do yet
 
 Named, measured where possible, and deliberately not built:

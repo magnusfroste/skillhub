@@ -278,6 +278,21 @@ Load with `visibility=team` and the rows are the department's: `skillhub_query` 
 for a team-mate and not for an outsider. The caretaker cannot load team rows of its own and is
 told why -- a row reaches a team through its owner.
 
+## 8. A mirror, not an export
+
+Tell the caretaker to connect to a CRM or an ERP and keep a read-only copy of part of it here.
+Give it credentials and nothing else -- no schema, no table names, no procedure. It should
+inventory the source, choose a scope and say what it left out, build the tables with
+`create_shared_table`, key them on the source's own id, and record each run with
+`skillhub_record_sync`. Then `platform.v_sources` names one feed per model with its watermark,
+and after the third run a rhythm appears without anything being configured.
+
+Measured 2026-09-20 against an Odoo instance: twelve tables overnight, all following the
+convention, the source's ids kept, `write_date` used as a watermark and verified against the
+source on the next pass. What it needed from us was nothing; what it got wrong was recording,
+and §32 says what changed because of it. The tell that the standard is being followed is the
+absence of a run journal in `notes`.
+
 ## When something fails
 
 - `FAILED` in the seed log → the store is incomplete; fix the file, re-run `utils/seed.sh`.

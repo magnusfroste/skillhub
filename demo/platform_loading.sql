@@ -151,7 +151,11 @@ grant execute on function public.skillhub_record_sync(text,text,text,text,bigint
 -- Three deliveries is the threshold for having a rhythm at all. Below it this is a FILE
 -- somebody loaded once, and calling a one-off import an overdue feed is how an operating
 -- surface becomes noise.
-create or replace view platform.v_sources as
+-- Dropped first: the column list changed order (source_model sits beside source_system, where
+-- a reader looks for it) and CREATE OR REPLACE VIEW may only append. Nothing depends on it --
+-- skillhub_overview reads it from a function, not from a view built on top.
+drop view if exists platform.v_sources;
+create view platform.v_sources as
 with gaps as (
   select d.target_table, d.source_system, d.at,
          extract(epoch from (d.at - lag(d.at) over w))/3600 as gap,
@@ -179,11 +183,11 @@ per_feed as (
   from gaps g
   group by g.target_table, g.source_system
 )
-select f.target_table as table_name, f.source_system, d.filename,
+select f.target_table as table_name, f.source_system, d.source_model, d.filename,
        d.row_count, d.agent as loaded_by,
        f.last_at::timestamp(0) as last_loaded,
        (now() - f.last_at) as age,
-       f.deliveries,
+       f.deliveries, d.run_id as last_run, d.watermark,
        case when f.deliveries >= 3 and f.avg_gap is not null
             then make_interval(secs => round(f.avg_gap * 3600)) end as typical_gap,
        -- Overdue at twice the rhythm: late enough that it is not jitter, early enough to be
@@ -195,6 +199,8 @@ join platform.deliveries d
   on d.target_table = f.target_table and d.source_system = f.source_system and d.at = f.last_at
 order by f.last_at desc;
 comment on view platform.v_sources is 'One row per feed -- a source system loading into a table. From where, how much, how old, how often, and whether the next load is overdue (quiet). Start here when someone asks whether the data is current, or what fills this store. A table loaded fewer than three times is a file, not a feed: it has no rhythm and is never reported quiet.';
+comment on column platform.v_sources.source_model is 'What the source calls the data in this feed: crm.lead, sale.order. Null for a plain file upload, where the filename says it instead.';
+comment on column platform.v_sources.watermark is 'How far the last load got, as the source states it. A watermark that stops moving while loads keep arriving is a feed reading the same thing over and over.';
 comment on column platform.v_sources.typical_gap is 'The average time between this feed''s loads, inferred from the deliveries themselves. Null until there are three.';
 comment on column platform.v_sources.quiet is 'True when the last load is more than twice the typical gap old: the feed has stopped without failing. Nothing here can restart it -- the schedule lives in the agent that runs it.';
 
@@ -350,8 +356,8 @@ begin
     ## Before you call it done
 
     - Every mirrored table registers a delivery on every run.
-    - `select table_name, source_system, last_loaded, typical_gap, quiet from platform.v_sources`
-      shows one row per model, with a rhythm after the third run.
+    - `select table_name, source_system, source_model, last_loaded, watermark, typical_gap, quiet
+      from platform.v_sources` shows one row per model, with a rhythm after the third run.
     - The column comments carry what you noticed.
     - No table has zero rows.
     - Nothing was written to the source, and your run record says so.

@@ -1005,6 +1005,14 @@ short and is the only heading on its line, because a line carrying several marke
 line breaks were lost in transit. Measured before and after on the same note: one shared
 120-character blob, versus a distinct pointer per chunk. The structured case is unchanged.
 
+**And the rule that follows from it.** Past a few thousand characters, text does not go in a tool
+argument at all -- it is written to a file and handed over with `skillhub_upload_url` plus
+`skillhub_load_text`, the same route a manual takes, and a `.md` or `.txt` needs no sidecar. That
+was already the route for a file somebody gives you; the conventions now say it for text an agent
+wrote itself. The result is a document held verbatim rather than a note, which is the right shelf
+for a long piece of writing anyway, and a file never passes through a JSON string -- so nothing
+about the text has to survive being escaped by whichever client happens to be carrying it.
+
 The lesson is the same one §31 taught about feeds: the agent's work was fine, and what needed
 fixing was the store's ability to see and keep it.
 

@@ -369,6 +369,123 @@ begin
 end $do$;
 
 -- ---------------------------------------------------------------------------
+-- 2c) Inviting an agent, as a house standard the caretaker can hand out.
+--
+-- The invite is utils/agent-invite.md, filled on the host by make-agent-invite.sh from the
+-- deployed .env -- because the key is the one thing the store does not have and must not: no
+-- key material is ever in the database, and the caretaker's container holds only its own.
+-- Asked for on 2026-09-21: could the caretaker produce the invite itself and send it to a
+-- colleague? Yes, for everything but the key. The store knows which slot is free and what its
+-- own address is; the person types the key from the Easypanel panel on the device. So this
+-- skill carries the same paste text with the key left as a placeholder, and the empty-database
+-- test pins the SOUL block here to the one in the file, so the two cannot drift apart.
+-- ---------------------------------------------------------------------------
+do $do$
+begin
+  if not exists (select 1 from public.skill_library where slug = 'inviting-an-agent' and version = '1.0.0') then
+    insert into public.skill_library (slug, name, description, skill_md, version, author_name, license, tags, visibility, status)
+    values (
+      'inviting-an-agent',
+      'Inviting a colleague''s agent into the store',
+      'For the caretaker: how to connect a new agent on somebody''s own machine -- which slot to give it, the text to send, and the one thing that is never in that text.',
+      $md$---
+    name: inviting-an-agent
+    description: Follow this when a colleague's agent, on their own laptop, should join the store. You fill in the slot and the address; the person types the key.
+    version: 1.0.0
+    license: MIT
+    ---
+
+    # Inviting a colleague's agent
+
+    An agent on somebody's own machine is configured by hand: it gets a key, an address, and
+    whatever the store tells it. You can prepare everything except the key.
+
+    ## 1. Pick a free slot
+
+    Ten slots exist, agent_01 to agent_10, each bound to a key MCP_KEY_NN in the gateway.
+    A slot is free when nobody is behind it and nothing has ever used it:
+
+        select a.id from public.agents a
+         where a.id like 'agent_%' and a.name is null
+           and not exists (select 1 from platform.tool_log t where t.agent = a.id)
+           and not exists (select 1 from platform.events e where e.agent = a.id)
+         order by a.id;
+
+    Take the lowest. Then write the person's name or role on that row, so the others can
+    see who is behind it:
+
+        update public.agents set name = 'Anna', role = 'sales, northern region' where id = 'agent_05';
+
+    ## 2. Fill in the text below and send it
+
+    Replace `<agent_NN>` with the slot and `<STORE URL>` with this store's address -- the one
+    your own MCP configuration points at, without `/mcp` on the end.
+
+    **Leave `<KEY>` exactly as it is.** The key is the value of `MCP_KEY_NN` in the Easypanel
+    panel of the store, and it is not in the database, not in your environment, and never in
+    the same message as the address: a key beside an address is the pair that makes a leak
+    immediately usable. The person who administers the panel gives it to the colleague
+    separately, and the colleague types it in on the device. Say so in your message.
+
+    ## 3. When they report back
+
+    They should paste what `skillhub_whoami` and `skillhub_overview` returned. If whoami says
+    a different agent than the slot you gave them, the wrong key reached that machine: stop
+    and tell the person who holds the panel.
+
+    ---
+
+    Below is the text to send. It is the same as `utils/agent-invite.md` in the repository,
+    which is the source; the test suite refuses a build where the two differ.
+
+    Connect yourself to our shared data store. Do these three things, then report back.
+
+    **1. Add this MCP server permanently, so it is still there next time you start.**
+    It uses streamable HTTP.
+
+    - Name `skillhub` — URL `<STORE URL>/skillhub`
+    - Header: `apikey: <KEY>`
+
+    One server, not two. Earlier versions of this invite also listed a `supabase` server at
+    `<STORE URL>/mcp`. That is the raw SQL door and it now belongs to the caretaker alone, so
+    an agent key gets **403** on it — the key is valid, it is simply not in the admin group.
+    If you added that server from an older invite, remove it: the 403s are harmless but your
+    agent will report a failing server on every start, and everything it needs is in the
+    tools on `skillhub`.
+
+    **2. Put this block in your SOUL.md**, so it applies in every future session and not
+    only this one. If a block with the same markers is already there, replace it.
+
+    ```
+    <!-- skillhub:identity start -->
+    Shared data store: your identifier is <agent_NN>.
+
+    - Run skillhub_overview at the start of a session. It tells you what is in the store,
+      and its read_this_first says how this organisation expects it to be used. Follow
+      what it says -- those rules are kept in the store so they can be corrected for
+      everyone at once, and this block is deliberately not a copy of them.
+    - Run skillhub_rules before you write anything: the rules decide whether something
+      becomes a table, a note or a skill.
+    - Every write goes through a tool. You have no raw SQL against this store, and you do
+      not need any: the tools attach the change log and take your identity from the
+      gateway, which is what makes the store worth trusting.
+    <!-- skillhub:identity end -->
+    ```
+
+    **3. Reload your MCP servers, then run `skillhub_whoami` and `skillhub_overview`**, and
+    tell me exactly what came back.
+
+    `skillhub_whoami` reports the identity the gateway reads from your key, not anything
+    you claim. If it says something other than `<agent_NN>`, stop and say so — the wrong
+    key reached this machine.
+    $md$,
+      '1.0.0', 'skillhub', 'MIT',
+      '{invite,onboarding,caretaker,house-standard}', 'public', 'published'
+    );
+  end if;
+end $do$;
+
+-- ---------------------------------------------------------------------------
 -- 3) The pattern as a skill, so the next system lands the same way.
 -- ---------------------------------------------------------------------------
 -- Created only when the slug is absent, and wrapped in a DO block so the values clause is
@@ -490,6 +607,7 @@ select platform.put_conventions_section(30, 'house standards',
   -- The whole list lives here, including the standard platform_ops.sql seeds a moment
   -- later: a second file patching a line into this section rewrote it on every boot.
   || E'- `caretaker-operations` -- for the admin key: what to check, what to do, what to leave alone.\n'
-  || E'- `mirror-a-live-system` -- connecting to a CRM or an ERP and keeping a read-only copy here.\n\n'
+  || E'- `mirror-a-live-system` -- connecting to a CRM or an ERP and keeping a read-only copy here.\n'
+  || E'- `inviting-an-agent` -- for the caretaker: connecting a colleague''s agent on their own machine.\n\n'
   || E'If you invent a way of working that works and others will need: write a skill, tag it\n'
   || E'`house-standard`, and add it to the list above. That is how the store learns.\n');

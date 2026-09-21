@@ -359,6 +359,15 @@ check "help is plain text, names the steps in order, and lists the topics" \
   "select (public.skillhub_help() like '%WHAT TO DO, IN ORDER%')::text || ':' || (public.skillhub_help() like '%1. See the state%')::text || ':' || (public.skillhub_help() like '%load-from-source-system%')::text" "true:true:true"
 check "and the steps name tools, not SQL an agent may not run" \
   "select (count(*) = 0)::text from public.start_here where do_this like '%select %' or do_this like '%platform.%'" "true"
+# The invite the caretaker hands out and the file the host script fills must be the same text:
+# two copies of an onboarding block drift into two rulebooks, so the build refuses to differ.
+MD_BLOCK_MD5=$(sed -n '/skillhub:identity start/,/skillhub:identity end/p' utils/agent-invite.md | sed 's/^ *//; s/ *$//' | md5sum | cut -d' ' -f1)
+check "the caretaker's invite skill carries the same SOUL block as the file" \
+  "select md5(regexp_replace(regexp_replace(substring(skill_md from '<!-- skillhub:identity start -->.*<!-- skillhub:identity end -->'), '^ +', '', 'gn'), ' +$', '', 'gn') || E'\\n') from platform.v_current_skills where slug='inviting-an-agent'" "$MD_BLOCK_MD5"
+check "and leaves the key as a placeholder, never a value" \
+  "select (skill_md like '%apikey: <KEY>%')::text || ':' || (skill_md !~ 'apikey: [0-9a-f]{20}')::text from platform.v_current_skills where slug='inviting-an-agent'" "true:true"
+check "and help finds it by the word a person would use" \
+  "select (public.skillhub_help('invite') like '%Pick a free slot%')::text" "true"
 check "a topic reads the whole standard" \
   "select (public.skillhub_help('loading') like '%load-from-source-system%Load data from a source system%')::text || ':' || (length(public.skillhub_help('loading')) > 2000)::text" "true:true"
 check "a topic that does not exist answers with the ones that do" \

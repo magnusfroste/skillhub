@@ -1035,6 +1035,17 @@ before it has called anything -- who it is, to run `skillhub_overview` first and
 says, to check the rules before writing, and that there is no raw SQL door. That file argued for
 this arrangement from the start; it is now also true of the block it hands out.
 
+**And the caretaker can hand it out -- for everything but the key.** Asked the same day: could
+the caretaker produce the invite itself and send it to a colleague? The store knows which slot is
+free and what its own address is; it does not know the key and must not -- no key material is
+ever in the database, and giving the caretaker's container all ten keys would make one hijacked
+session a leak of every agent. So `inviting-an-agent` is a house standard: pick the free slot,
+fill the address, send the text with `<KEY>` left exactly as it is, and say that the person who
+holds the panel supplies it separately -- a key beside an address is the pair that makes a leak
+immediately usable. The paste text lives in `utils/agent-invite.md`, which stays the source; the
+skill carries a copy, and the empty-database test refuses a build where the two SOUL blocks
+differ. Two copies of an onboarding block would otherwise become two rulebooks.
+
 ---
 
 ## What this does not do yet

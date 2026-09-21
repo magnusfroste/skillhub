@@ -8,6 +8,11 @@ Three blanks, filled in on the device in front of you:
 | `<KEY>` | the MCP_KEY_NN carrying that same number |
 | `<STORE URL>` | the store's address, no trailing slash |
 
+The caretaker can hand this out too: the house standard `inviting-an-agent`
+(`skillhub_help('invite')`) carries the same text with `<KEY>` left blank, picks a free
+slot, and says who supplies the key. This file is the source; the test suite pins the two
+to each other.
+
 **Keep the filled-in version out of every repository, chat and ticket.** A key next to
 the address is the pair that makes a leak immediately usable, and a scanner caught
 exactly that combination in this repository once already. The template is harmless —

@@ -34,6 +34,14 @@ then hands the teaching to the server: the first bullet points at
 lives only in a pasted prompt is frozen where it was pasted, and eight devices drift
 into eight different rulebooks within a month.
 
+That is why the block below got **shorter** on 2026-09-21 rather than longer. Watching the
+first agent on a client install showed two rules missing -- search the store before
+researching something from scratch, and what you find out belongs in the store rather than in
+a file on the machine you are running on. Both went into `skillhub_overview`'s
+`read_this_first`, which every agent reads whoever configured it, and the reading rules that
+were duplicated here went with them. What stays below is only what an agent needs *before* it
+has called anything: who it is, where to look first, and to check the rules before it writes.
+
 Verified end to end on a fresh install: after this invite, asked "how many individual
 defects were reported in total" with no further hints, the agent searched the store,
 read a colleague's skill and answered **28,638**. Two agents without the invite
@@ -54,7 +62,7 @@ One server, not two. Earlier versions of this invite also listed a `supabase` se
 an agent key gets **403** on it — the key is valid, it is simply not in the admin group.
 If you added that server from an older invite, remove it: the 403s are harmless but your
 agent will report a failing server on every start, and everything it needs is in the
-fifteen tools on `skillhub`.
+tools on `skillhub`.
 
 **2. Put this block in your SOUL.md**, so it applies in every future session and not
 only this one. If a block with the same markers is already there, replace it.
@@ -63,14 +71,12 @@ only this one. If a block with the same markers is already there, replace it.
 <!-- skillhub:identity start -->
 Shared data store: your identifier is <agent_NN>.
 
-- Run skillhub_overview at the start of a session. It tells you what is in the store
-  and how this organisation expects it to be used. Follow what it says.
-- Before you ANSWER a question from this data, run skillhub_search and read what it
-  returns. Someone may already have written down how this data has to be read, and
-  reading it wrong produces a confident wrong number rather than an error.
+- Run skillhub_overview at the start of a session. It tells you what is in the store,
+  and its read_this_first says how this organisation expects it to be used. Follow
+  what it says -- those rules are kept in the store so they can be corrected for
+  everyone at once, and this block is deliberately not a copy of them.
 - Run skillhub_rules before you write anything: the rules decide whether something
   becomes a table, a note or a skill.
-- Read whole objects with skillhub_read rather than working from an excerpt.
 - Every write goes through a tool. You have no raw SQL against this store, and you do
   not need any: the tools attach the change log and take your identity from the
   gateway, which is what makes the store worth trusting.

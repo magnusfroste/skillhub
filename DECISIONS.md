@@ -1016,6 +1016,25 @@ about the text has to survive being escaped by whichever client happens to be ca
 The lesson is the same one §31 taught about feeds: the agent's work was fine, and what needed
 fixing was the store's ability to see and keep it.
 
+**Where a rule has to live, decided by how the agents are installed.** The caretaker runs from
+`hermes-easy`, whose boot seed writes these rules into its `SOUL.md` on every start. The other
+agents go on people's own laptops, configured by hand from `utils/agent-invite.md`: a key, an
+address, and whatever the store tells them. So a rule that lives only in a deployment repository
+reaches exactly one agent out of nine.
+
+That makes the store's own two channels the authoritative ones, because they reach every client
+whoever set it up: `skillhub_overview`'s `read_this_first`, which is the first thing an agent
+calls, and the tool descriptions, which are what an agent is holding when it hits the problem.
+Both now carry the rules above -- `read_this_first` at three lines, and deliberately staying
+three, and `skillhub_write_note` saying in its own description that long text goes as a file.
+
+The consequence is that the pasted block in the invite got **shorter**, not longer. It had
+duplicated the reading rules, and a copy in a pasted prompt is frozen where it was pasted: eight
+devices drift into eight rulebooks within a month. What remains is only what an agent needs
+before it has called anything -- who it is, to run `skillhub_overview` first and follow what it
+says, to check the rules before writing, and that there is no raw SQL door. That file argued for
+this arrangement from the start; it is now also true of the block it hands out.
+
 ---
 
 ## What this does not do yet

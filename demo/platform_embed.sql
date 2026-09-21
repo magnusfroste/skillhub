@@ -15,10 +15,33 @@
 -- chunk, because one of them alone is a poor pointer: a chunk that spans sections 3.4 to 7.3
 -- told a reader asking about 7.3 to look at 3.4 (measured on an agent's research note,
 -- 2026-09-17). A chunk with no heading falls back to its first line.
+-- What counts as a heading, asked in one place because three of them used to decide it
+-- separately and all three were wrong in the same way.
+--
+-- Measured 2026-09-21 on a client install: an agent researched an ERP system, wrote the result
+-- as a 5 KB markdown note, and its MCP client built invalid JSON because the content held
+-- literal newlines inside a string. The agent's fix was to flatten the note to a single line
+-- with spaces. The note then had exactly ONE line -- the whole 5 KB -- which began with "## "
+-- and so was accepted as a heading in full. Every chunk of that note got the same pointer,
+-- 120 characters of running prose, saying nothing about which part of it had matched.
+--
+-- A heading is short and there is only one of it on its line. Prose that opens with a hash is
+-- prose. The length bound is generous: the longest heading in this repository's own house
+-- standards is 48 characters.
+create or replace function platform.is_heading(line text) returns boolean
+language sql immutable as $$
+  select line ~ '^#{1,6} '
+     and length(line) <= 120
+     -- a second heading marker on the same line means the line is not one heading but many,
+     -- i.e. text whose newlines were lost somewhere between the writer and here
+     and regexp_replace(line, '^#{1,6} ', '') !~ '(^|\s)#{1,6}\s';
+$$;
+comment on function platform.is_heading(text) is 'Whether one line is a markdown heading rather than prose that happens to start with a hash. Short, and the only heading on its line: a line carrying several markers is text that lost its line breaks in transit.';
+
 create or replace function platform.chunk_head(chunk_body text) returns text
 language sql immutable as $$
   with h as (select l from regexp_split_to_table(chunk_body, E'\n') with ordinality as t(l, ord)
-              where l ~ '^#{1,6} ' order by ord)
+              where platform.is_heading(l) order by ord)
   select case
     when (select count(*) from h) = 0 then left(split_part(btrim(chunk_body), E'\n', 1), 80)
     when (select count(*) from h) = 1 then left((select l from h), 120)
@@ -71,7 +94,7 @@ begin
       return next; n := n + 1; cur := '';
     end if;
     if u ~ E'(^|\n)#{1,6} ' then
-      last_heading := (select l from regexp_split_to_table(u, E'\n') with ordinality as x(l, o) where l ~ '^#{1,6} ' order by o desc limit 1);
+      last_heading := (select l from regexp_split_to_table(u, E'\n') with ordinality as x(l, o) where platform.is_heading(l) order by o desc limit 1);
     end if;
     cur := case when cur = '' then u else cur || E'\n\n' || u end;
   end loop;

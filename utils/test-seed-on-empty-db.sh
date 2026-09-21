@@ -133,6 +133,14 @@ check "the pointer names the range of headings a chunk covers" \
   "select head from platform.chunk_text('T', '## One'||E'\n'||repeat('a ',300)||E'\n\n## Two'||E'\n'||repeat('b ',300)||E'\n\n## Three'||E'\n'||repeat('c ',300), 4000) limit 1" "## One  ...  ## Three"
 check "a chunk cut from the middle of a long section carries its heading forward" \
   "select head from platform.chunk_text('T', '## Page 4'||E'\n'||repeat('word ',900)||E'\n\n'||repeat('more ',900), 2500) where chunk = 1" "## Page 4 (continued)"
+# A note whose line breaks were lost in transit is not one enormous heading (2026-09-21).
+# Measured on a client install: an agent flattened a 5 KB markdown note to a single line to get
+# it past its own client's JSON building, and every chunk of it then carried the same 120
+# characters of prose as its pointer.
+check "prose that merely starts with a hash is not a heading" \
+  "select platform.is_heading('## Arkitektur')::text || ':' || platform.is_heading('## Vad systemet är Marknadsledande ERP för tillverkande industri. ## Arkitektur G4 ar aldre, G5 ar nuvarande.')::text || ':' || platform.is_heading(repeat('x', 200))::text" "true:false:false"
+check "and no chunk of a flattened note claims a heading holding two of them" \
+  "select (count(*) filter (where head ~ '#{1,6} .*[[:space:]]#{1,6} '))::text || ':' || (count(distinct head) > 1)::text from (select repeat('alfa ', 90) as a, repeat('beta ', 90) as b) s, lateral platform.chunk_text('Flattened probe', '## Ett ' || s.a || ' ## Tva ' || s.b, 400)" "0:true"
 check "a single-heading chunk names just that one" \
   "select head from platform.chunk_text('T', '## Only'||E'\n'||repeat('a ',100), 4000) limit 1" "## Only"
 check "a long text is chunked on its headings, title on every chunk" \

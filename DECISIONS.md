@@ -960,6 +960,56 @@ solves something, and the solution becomes what the next one starts from.
 
 ---
 
+## 33. What the first agent on a client install did with the rules
+
+**2026-09-21.** A new SkillHub and a new Hermes on a client's own Easypanel. The first agent,
+not the caretaker, was told in Swedish: research Monitor ERP, we intend to integrate with it
+later, find out everything we need to understand. Nobody told it about the store. Its reasoning
+is the only unprompted evidence we have of how the conventions read from the outside.
+
+**What worked, and it is the part that matters.** It found `skillhub_overview` and ran it. It
+read `skillhub_rules` before writing anything. It classified its own output correctly --
+*"this is 'how the system works' -- i.e., text"* -- and wrote a note rather than inventing a
+table or publishing a skill. On a virgin instance, with credentials and nothing else, an agent
+followed the house conventions and chose the right shelf. That is the product's central claim
+and it held.
+
+**Three things went wrong, and none of them was the agent's judgement.**
+
+*The rule it had was precise and did not apply.* The instruction reads "before you ANSWER a
+question **from this data**, run `skillhub_search`". The task's answer was on the web, so by
+its own words the rule was silent -- and the agent deliberated over it in five separate
+thinking blocks, each time concluding "do it anyway, to follow convention", and ran
+`skillhub_overview` twice on the way. The reason that *does* apply to research -- a colleague
+may have done this last week, and the store is where they would have put it -- appeared in none
+of the rules it had. Fixed where the rules live, in hermes-easy's identity block.
+
+*The store was the afterthought.* Its plan for the finished report: *"I'll create a structured
+research document and save it to a file in the workspace, then present a summary afterwards. I
+might also save a note to skillhub."* A file in a container's filesystem, which is gone at the
+next restart, was the default; the store was optional. Nothing had told it otherwise -- every
+rule about writing said which *kind* of thing to write, never that writing it here at all is
+the point. One bullet now says so.
+
+*Its client could not send the note.* Building the `tool_call` JSON for a 5 KB markdown note
+with literal newlines inside a string, Hermes produced invalid JSON -- *"Expecting ',' delimiter
+at character 4919"*. The agent diagnosed it correctly and worked around it by flattening the
+note to a single line with spaces instead of newlines. That is a client-side bug we cannot fix
+from here, but the damage landed in the store, and that part was ours:
+
+**`chunk_head` accepted 120 characters of prose as a heading.** A flattened note has exactly one
+line, that line begins with `## `, and so the whole opening of the note became the retrieval
+pointer -- the same pointer on every chunk, naming nothing. The predicate is now one function,
+`platform.is_heading`, asked by all three places that used to decide it separately: a heading is
+short and is the only heading on its line, because a line carrying several markers is text whose
+line breaks were lost in transit. Measured before and after on the same note: one shared
+120-character blob, versus a distinct pointer per chunk. The structured case is unchanged.
+
+The lesson is the same one §31 taught about feeds: the agent's work was fine, and what needed
+fixing was the store's ability to see and keep it.
+
+---
+
 ## What this does not do yet
 
 Named, measured where possible, and deliberately not built:

@@ -170,7 +170,13 @@ const TOOLS: Tool[] = [
   {
     name: "skillhub_write_note",
     description:
-      "Save free text: an observation, an investigation, how something works. The default choice when it is not the same shape over and over (that is a table) and not instructions others should follow (that is a skill). Ownership is filled in from your key; you cannot set it.",
+      // The length sentence is here and not only in the conventions skill because this is the
+      // tool an agent is already holding when it hits the problem, and because a tool
+      // description reaches EVERY client -- including the agents on people's own machines,
+      // which no deployment repository of ours configures. Measured 2026-09-21: a 5 KB report
+      // could not be sent at all (the client built invalid JSON from the line breaks) and the
+      // agent flattened it to one line to get it through, losing every heading in it.
+      "Save free text: an observation, an investigation, how something works. The default choice when it is not the same shape over and over (that is a table) and not instructions others should follow (that is a skill). Ownership is filled in from your key; you cannot set it. PAST A FEW THOUSAND CHARACTERS, DO NOT USE THIS TOOL: long text does not survive being escaped into a tool argument, and flattening it to get it through destroys the headings the store cuts and names it by. Write it to a file and hand that over instead -- skillhub_upload_url, the curl line it returns, then skillhub_load_text -- which also puts it on the right shelf: a document held verbatim, quotable by page.",
     inputSchema: obj(
       {
         title: str("Short heading"),

@@ -32,9 +32,22 @@ language sql stable security definer set search_path = public, platform as $$
     -- Two lines, not three, and one of them is a pointer rather than a restatement: the tour
     -- lives in start_here and is read with skillhub_help, the placement rule in
     -- skillhub_rules. Saying it all again here was a third copy to keep in step.
+    -- Three lines, and they stay three: this is the store's only channel to an agent it did
+    -- not install. The caretaker runs from a compose file that seeds these same rules into its
+    -- SOUL.md, but the agents on people's own laptops are configured by hand -- they get a key,
+    -- an address, and whatever this call tells them. So a rule that matters cannot live only in
+    -- a deployment repository. It has to be here, and short enough to be read (2026-09-21).
     'read_this_first', jsonb_build_array(
       'New here, or unsure what this store holds? skillhub_help -- the tour in order, and the finished procedures.',
-      'Run skillhub_search before you ANSWER a question from this data, not only before you create something. Someone may have written down how it has to be read, and reading it wrong gives a confident wrong number rather than an error.'),
+      -- The narrow version of this line cost five rounds of deliberation on a client install: an
+      -- agent asked to research a subject could not tell whether "a question from this data"
+      -- covered it, and the reason that did apply -- somebody may have done this already -- was
+      -- written nowhere. So the line now names both.
+      'Run skillhub_search before you ANSWER a question from this data, and before you RESEARCH anything from scratch. Someone may have written down how the data has to be read -- reading it wrong gives a confident wrong number rather than an error -- or may have done the same investigation last week.',
+      -- Measured the same session: the agent planned to save its finished report to a file in its
+      -- own workspace and treated writing it here as optional. Every other rule said which KIND
+      -- of thing to write, none said that writing it here at all is the point.
+      'What you find out belongs in here, not in a file on the machine you are running on -- that one is gone when your session ends, and nobody else can read it meanwhile. A note for what you learned, a skill for a procedure others should follow. Past a few thousand characters, hand it over as a file instead: skillhub_upload_url, the curl line it gives you, then skillhub_load_text.'),
     'numbers', (select jsonb_object_agg(label, value) from platform.overview()),
     'who_is_here', (select coalesce(jsonb_agg(jsonb_build_object('agent', id, 'name', name,
                       'role', role, 'team', team) order by id), '[]'::jsonb)

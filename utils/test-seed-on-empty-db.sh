@@ -364,7 +364,11 @@ check "a topic reads the whole standard" \
 check "a topic that does not exist answers with the ones that do" \
   "select (public.skillhub_help('kaffe') like '%No topic matches \"kaffe\"%')::text || ':' || (public.skillhub_help('kaffe') like '%caretaker-operations%')::text" "true:true"
 check "overview points at help instead of repeating the tour" \
-  "select (public.skillhub_overview()->'read_this_first'->>0 like '%skillhub_help%')::text || ':' || jsonb_array_length(public.skillhub_overview()->'read_this_first')::text" "true:2"
+  "select (public.skillhub_overview()->'read_this_first'->>0 like '%skillhub_help%')::text || ':' || jsonb_array_length(public.skillhub_overview()->'read_this_first')::text" "true:3"
+# The store's only channel to an agent it did not install: the caretaker gets these rules seeded
+# into its SOUL.md by a compose file, an agent on somebody's laptop gets a key and this call.
+check "and carries the two rules a hand-configured agent has no other way of learning" \
+  "select ((public.skillhub_overview()->'read_this_first'->>1) like '%RESEARCH anything from scratch%')::text || ':' || ((public.skillhub_overview()->'read_this_first'->>2) like '%not in a file on the machine you are running on%')::text || ':' || ((public.skillhub_overview()->'read_this_first'->>2) like '%skillhub_load_text%')::text" "true:true:true"
 # A document's TEXT in the store (2026-09-18): verbatim, with page markers, searchable by
 # words with the matching passage as the excerpt, readable whole or by pages, indexed by
 # meaning with the pages as chunk headings. Before this the catalogue knew a file's name and

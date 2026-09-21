@@ -248,6 +248,29 @@ values (0, 'the conventions themselves', $md$---
     - Never change or delete another agent's rows. Public rows may be edited, but write down what
       you changed if it is not obvious.
 
+    ### Long text goes as a file, not as a tool argument
+
+    Past a few thousand characters, do not put the text in a tool argument at all. Write it to a
+    file, hand the file over, and let the store read it:
+
+        skillhub_upload_url(filename='research-monitor-erp.md', sha256=<sha256sum of it>, description=...)
+        -- run the curl line it gives you
+        skillhub_load_text(document_id)
+
+    A `.md`, `.txt`, `.csv` or `.json` file needs no second line: the store reads it directly. The
+    result is a document whose text is held verbatim -- searched by words and by meaning, quotable,
+    readable by page -- which is the right shelf for a long piece of writing anyway. Short
+    observations stay notes.
+
+    Why this is a rule and not a preference. Measured 2026-09-21: an agent wrote a 5 KB markdown
+    report and its client could not send it -- a few thousand characters of text with real line
+    breaks inside a JSON string, and the call came back "Expecting ',' delimiter at character
+    4919". The agent's workaround was to flatten the report to a single line with spaces instead of
+    newlines. It arrived, and every heading in it was gone: the store cuts long text on its
+    headings and names each piece by the headings it covers, so a hit could no longer say which
+    part of the report it had found. A file never passes through a JSON string, so nothing about
+    the text has to survive being escaped.
+
     ## New tables
 
     - Create them with `select public.create_shared_table('<name>', '<description>')` and add your

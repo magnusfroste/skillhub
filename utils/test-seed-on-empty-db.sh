@@ -137,6 +137,8 @@ check "a chunk cut from the middle of a long section carries its heading forward
 # Measured on a client install: an agent flattened a 5 KB markdown note to a single line to get
 # it past its own client's JSON building, and every chunk of it then carried the same 120
 # characters of prose as its pointer.
+check "the conventions say long text is handed over as a file, not squeezed through an argument" \
+  "select (skill_md like '%Long text goes as a file%')::text || ':' || (skill_md like '%skillhub_load_text(document_id)%')::text from platform.v_current_skills where slug='store-conventions'" "true:true"
 check "prose that merely starts with a hash is not a heading" \
   "select platform.is_heading('## Arkitektur')::text || ':' || platform.is_heading('## Vad systemet är Marknadsledande ERP för tillverkande industri. ## Arkitektur G4 ar aldre, G5 ar nuvarande.')::text || ':' || platform.is_heading(repeat('x', 200))::text" "true:false:false"
 check "and no chunk of a flattened note claims a heading holding two of them" \

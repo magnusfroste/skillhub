@@ -382,7 +382,7 @@ end $do$;
 -- ---------------------------------------------------------------------------
 do $do$
 begin
-  if not exists (select 1 from public.skill_library where slug = 'inviting-an-agent' and version = '1.0.0') then
+  if not exists (select 1 from public.skill_library where slug = 'inviting-an-agent' and version = '1.1.0') then
     insert into public.skill_library (slug, name, description, skill_md, version, author_name, license, tags, visibility, status)
     values (
       'inviting-an-agent',
@@ -391,7 +391,7 @@ begin
       $md$---
     name: inviting-an-agent
     description: Follow this when a colleague's agent, on their own laptop, should join the store. You fill in the slot and the address; the person types the key.
-    version: 1.0.0
+    version: 1.1.0
     license: MIT
     ---
 
@@ -446,13 +446,6 @@ begin
     - Name `skillhub` — URL `<STORE URL>/skillhub`
     - Header: `apikey: <KEY>`
 
-    One server, not two. Earlier versions of this invite also listed a `supabase` server at
-    `<STORE URL>/mcp`. That is the raw SQL door and it now belongs to the caretaker alone, so
-    an agent key gets **403** on it — the key is valid, it is simply not in the admin group.
-    If you added that server from an older invite, remove it: the 403s are harmless but your
-    agent will report a failing server on every start, and everything it needs is in the
-    tools on `skillhub`.
-
     **2. Put this block in your SOUL.md**, so it applies in every future session and not
     only this one. If a block with the same markers is already there, replace it.
 
@@ -479,10 +472,15 @@ begin
     you claim. If it says something other than `<agent_NN>`, stop and say so — the wrong
     key reached this machine.
     $md$,
-      '1.0.0', 'skillhub', 'MIT',
+      '1.1.0', 'skillhub', 'MIT',
       '{invite,onboarding,caretaker,house-standard}', 'public', 'published'
     );
   end if;
+  -- 1.0.0 carried a paragraph about a server that older invites had listed; a new agent has
+  -- never seen one. Superseded, never edited -- the same rule as every other house standard.
+  update public.skill_library
+     set superseded_by = '1.1.0', updated_at = now()
+   where slug = 'inviting-an-agent' and version <> '1.1.0' and superseded_by is null;
 end $do$;
 
 -- ---------------------------------------------------------------------------

@@ -13,6 +13,14 @@ The caretaker can hand this out too: the house standard `inviting-an-agent`
 slot, and says who supplies the key. This file is the source; the test suite pins the two
 to each other.
 
+**If a device was set up from an invite older than 2026-09-14**, it also carries a
+`supabase` server at `<STORE URL>/mcp`. That is the raw SQL door, caretaker-only since
+then, so an agent key gets 403 on it -- harmless, but the agent reports a failing server on
+every start. Have it remove that server. This note used to be in the pasted text itself and
+was taken out on 2026-09-21: a new agent on a new instance has never seen the old invite,
+and a paragraph about something it does not have is the kind of text that gets skimmed
+past -- along with the line after it.
+
 **Keep the filled-in version out of every repository, chat and ticket.** A key next to
 the address is the pair that makes a leak immediately usable, and a scanner caught
 exactly that combination in this repository once already. The template is harmless —
@@ -61,13 +69,6 @@ It uses streamable HTTP.
 
 - Name `skillhub` — URL `<STORE URL>/skillhub`
 - Header: `apikey: <KEY>`
-
-One server, not two. Earlier versions of this invite also listed a `supabase` server at
-`<STORE URL>/mcp`. That is the raw SQL door and it now belongs to the caretaker alone, so
-an agent key gets **403** on it — the key is valid, it is simply not in the admin group.
-If you added that server from an older invite, remove it: the 403s are harmless but your
-agent will report a failing server on every start, and everything it needs is in the
-tools on `skillhub`.
 
 **2. Put this block in your SOUL.md**, so it applies in every future session and not
 only this one. If a block with the same markers is already there, replace it.

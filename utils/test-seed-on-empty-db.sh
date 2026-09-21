@@ -364,6 +364,8 @@ check "and the steps name tools, not SQL an agent may not run" \
 MD_BLOCK_MD5=$(sed -n '/skillhub:identity start/,/skillhub:identity end/p' utils/agent-invite.md | sed 's/^ *//; s/ *$//' | md5sum | cut -d' ' -f1)
 check "the caretaker's invite skill carries the same SOUL block as the file" \
   "select md5(regexp_replace(regexp_replace(substring(skill_md from '<!-- skillhub:identity start -->.*<!-- skillhub:identity end -->'), '^ +', '', 'gn'), ' +$', '', 'gn') || E'\\n') from platform.v_current_skills where slug='inviting-an-agent'" "$MD_BLOCK_MD5"
+check "and no longer explains a server a new agent has never had" \
+  "select version || ':' || (skill_md not like '%One server, not two%')::text from platform.v_current_skills where slug='inviting-an-agent'" "1.1.0:true"
 check "and leaves the key as a placeholder, never a value" \
   "select (skill_md like '%apikey: <KEY>%')::text || ':' || (skill_md !~ 'apikey: [0-9a-f]{20}')::text from platform.v_current_skills where slug='inviting-an-agent'" "true:true"
 check "and help finds it by the word a person would use" \

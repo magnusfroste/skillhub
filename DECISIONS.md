@@ -1086,6 +1086,59 @@ for `.xlsx` the honest answer, which is that a spreadsheet is rows and belongs i
 
 ---
 
+## 35. The agent never holds a token
+
+**Decided and built 2026-09-22, from three measured runs.** A file is handed to the store with an
+upload *ticket* -- 32 hex characters, single-use, ten minutes, bound to one document and one
+object -- and `PUT /deliver/<ticket>`. The signed Storage URL, a JWT of some 300 characters, is
+gone from every line an agent is given.
+
+**The measurement.** An agent on dev was given four files (PDF, Word, PowerPoint, Excel) and one
+sentence: put them in the shared store so colleagues can find them. Across the second and third
+runs it registered every file, extracted text with the store's own lines, chose the table route for
+the spreadsheet unprompted -- and five of twelve uploads failed with `InvalidJWT: signature
+verification failed`. Decoding the tokens it had sent showed why: every failed one carried an
+altered payload -- `upsert:'false'` as a string where the server had signed `false`, an `exp` an
+hour in the past, one that was not base64 at all. Every token that worked was byte-exact. The
+same model copied 36-character document ids correctly twelve times out of twelve.
+
+**Why the token was in the model's mouth at all.** Three earlier decisions, each right: file
+bytes never pass through a tool argument (sixty rows that way took 36 calls); Storage admits an
+anonymous PUT only when the URL carries its own authorisation, which is what a signed URL is; and
+the only path from a tool result to the agent's shell runs through the model's output. A model
+does not copy a string like that, it generates it again, and generation of long random base64 is
+lossy. Formatting could not fix it -- the third run failed on tokens with correct payloads and
+mangled signatures, seven curls in one command.
+
+**What changed, and what did not.** The long string moved from the model's mouth to the store's
+table. `skillhub_upload_url` issues a ticket inside the authenticated tool call and hands the
+agent `curl -sS -T '<the file>' https://<store>/deliver/<ticket>`. Kong forwards `/deliver` to
+the skillhub function with **no key-auth, on purpose**: the ticket is the key. The function
+redeems it atomically (`update … where redeemed_at is null returning`, so two PUTs get exactly
+one success), streams the body to the one path the ticket names, marks it done, and hands the
+ticket back if Storage refused -- so the same line can be retried. The agent's API key is never
+part of it: it proves itself once, inside the call that issues the ticket, and never leaves its
+MCP configuration -- which is the property the whole store rests on, and the one design that
+*would* have exposed it (the key in a shell line) was rejected for that reason.
+
+Compared with the signed URL it replaces, the ticket is stricter on two counts -- single-use,
+where a signed URL with `x-upsert` could be replayed until expiry; and the object path is never
+the caller's to choose -- and equal on the rest: same anonymous route, same ten minutes, same
+"possession is permission". Size and rate limits sit on the route in Kong, before a body reaches
+anything. What a stolen ticket buys is one write to one file slot for ten minutes: no read, no
+other path, no tool.
+
+**And a state that used to be invisible.** A ticket for a *file* that expires unredeemed is a
+document that was registered and never uploaded -- a pointer with nothing inside. The first run
+of the test left four such rows and nothing said so. `platform.v_uploads` now says `never came`,
+and `platform.health()` names them.
+
+**Not done.** Downloads still hand out a signed URL, and the same fragility applies the day an
+agent has to copy one. The route is the mirror of this one -- `GET /deliver/<ticket>` -- and is
+the next step if it is ever measured to fail.
+
+---
+
 ## What this does not do yet
 
 Named, measured where possible, and deliberately not built:

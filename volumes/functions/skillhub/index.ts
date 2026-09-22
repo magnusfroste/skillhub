@@ -469,13 +469,12 @@ const DOCX_TEXT_LINE = "python3 -c \"import zipfile,re;f='<the file>';z=zipfile.
 // context that cost. First sheet to CSV, shared strings and inline strings both, cells kept
 // in their columns so blanks stay aligned. Tested on both kinds of file in that container.
 const XLSX_CSV_LINE = "python3 -c \"import zipfile,re,csv;f='<the file>';z=zipfile.ZipFile(f);ss=[re.sub('<[^>]+>','',m) for m in re.findall(r'<si>(.*?)</si>',z.read('xl/sharedStrings.xml').decode(),re.S)] if 'xl/sharedStrings.xml' in z.namelist() else [];sh=sorted(n for n in z.namelist() if re.match(r'xl/worksheets/sheet\\d+\\.xml$',n))[0];w=csv.writer(open(f+'.csv','w',newline=''));col=lambda a:sum((ord(ch)-64)*26**i for i,ch in enumerate(reversed(re.match('[A-Z]+',a).group())))-1;strip=lambda v:re.sub('<[^>]+>','',v)\nfor row in re.findall(r'<row[^>]*>(.*?)</row>',z.read(sh).decode(),re.S):\n cells={};[cells.__setitem__(col(a),(ss[int(strip(v))] if t=='s' else strip(v))) for a,t,v in re.findall(r'<c r=\\\"([A-Z]+\\d+)\\\"(?:[^>]*?t=\\\"(\\w+)\\\")?[^>]*>(.*?)</c>',row,re.S)]\n w.writerow([cells.get(i,'') for i in range(max(cells)+1)] if cells else [])\"";
-async function signedUploadUrl(path: string): Promise<string> {
-  const r = await fetch(`${SUPABASE_URL}/storage/v1/object/upload/sign/${BUCKET}/${path}`, { method: "POST", headers: storageHeaders });
-  const t = await r.text();
-  if (!r.ok) throw new Error(`Storage would not sign an upload for ${path}: ${r.status} ${t.slice(0, 200)}`);
-  const rel = JSON.parse(t).url as string;            // "/object/upload/sign/<bucket>/<path>?token=..."
-  const base = PUBLIC_URL || SUPABASE_URL;
-  return `${base}/storage/v1${rel.startsWith("/") ? rel : "/" + rel}`;
+// An upload TICKET instead of a signed URL. The comment on platform.upload_tickets has the
+// measurement; the short version: a model re-types a 300-character token and copies a
+// 32-character one, and the agent's key is never part of either.
+async function uploadTicket(documentId: string, agent: string, target: "file" | "text", path: string): Promise<string> {
+  const nonce = await callRpc("upload_ticket_issue", { p_document_id: documentId, p_agent: agent, p_target: target, p_path: path }) as string;
+  return `${PUBLIC_URL || SUPABASE_URL}/deliver/${nonce}`;
 }
 // The mirror of the upload: a signed URL that lets the holder READ one object for ten
 // minutes. Until 2026-09-22 nothing handed a file back out -- a caretaker that had to extract
@@ -619,7 +618,7 @@ async function handle(body: any, agent: string): Promise<unknown | null> {
         if (/\.(txt|md|csv|json)$/i.test(filename)) {
           throw new Error(`${filename} is a text file already: run skillhub_load_text(document_id) directly.`);
         }
-        const textUrl = await signedUploadUrl(`${path}.txt`);
+        const textUrl = await uploadTicket(docId, agent, "text", `${path}.txt`);
         const line =
           /\.pptx$/i.test(filename) ? PPTX_TEXT_LINE.replaceAll("<the file>", filename)
           : /\.docx$/i.test(filename) ? DOCX_TEXT_LINE.replaceAll("<the file>", filename)
@@ -629,8 +628,8 @@ async function handle(body: any, agent: string): Promise<unknown | null> {
           // x-upsert, because a sidecar that exists already is the common case here: a wrong
           // or partial text is being replaced, and a 409 would send the agent back to square one.
           make_text_with: line,
-          upload_text_with: `curl -sS -X PUT -H 'content-type: text/plain' -H 'x-upsert: true' --upload-file '${filename}.txt' '${textUrl}'`,
-          then: "From your shell: make_text_with, then upload_text_with COPIED EXACTLY -- the token in the URL fails with InvalidJWT if re-typed (skillhub_download_url gives you the file if it is not on this machine). Then skillhub_load_text(document_id). No new document is created: the text lands beside the file it belongs to.",
+          upload_text_with: `curl -sS -T '${filename}.txt' '${textUrl}'`,
+          then: "From your shell: make_text_with, then upload_text_with (skillhub_download_url gives you the file if it is not on this machine). Then skillhub_load_text(document_id). No new document is created: the text lands beside the file it belongs to.",
         }, null, 2) }] });
       }
       if (tool.rpc === "__upload_url__") {
@@ -656,16 +655,15 @@ async function handle(body: any, agent: string): Promise<unknown | null> {
             then: "This exact file is already in the store (same sha256). Skip the upload: go straight to skillhub_load_file into an existing table, or skillhub_request_structure with this document_id. If what you need is to upload or replace its TEXT, call skillhub_upload_url again with text_for_document_id set to this id and nothing else.",
           }, null, 2) }] });
         }
-        const url = await signedUploadUrl(path);
-        // A second URL, for the file's TEXT: pdftotext -layout output beside a PDF, so the
+        const url = await uploadTicket(reg.id, agent, "file", path);
+        // A second ticket, for the file's TEXT: pdftotext -layout output beside a PDF, so the
         // store can hold what the document says without parsing PDFs itself and without a
         // single page passing through the model. A text file needs no sidecar.
         const isText = /\.(txt|md|csv|json)$/i.test(filename);
-        const textUrl = isText ? null : await signedUploadUrl(`${path}.txt`);
-        const mime = /\.csv$/i.test(filename) ? "text/csv" : /\.pdf$/i.test(filename) ? "application/pdf" : "application/octet-stream";
+        const textUrl = isText ? null : await uploadTicket(reg.id, agent, "text", `${path}.txt`);
         return rpcOk(id, { content: [{ type: "text", text: JSON.stringify({
           document_id: reg.id, path, already_uploaded: false, duplicate_of: reg.duplicate_of ?? null,
-          upload_with: `curl -sS -X PUT -H 'content-type: ${mime}' --upload-file '<the file>' '${url}'`,
+          upload_with: `curl -sS -T '<the file>' '${url}'`,
           // One line per file type, and it has to exist for the types people actually hand over.
           // 2026-09-22 on a client install: a slide deck was uploaded with the pdftotext line
           // beside it, which cannot read a .pptx, so the file sat catalogued and unsearchable
@@ -681,16 +679,16 @@ async function handle(body: any, agent: string): Promise<unknown | null> {
           ...(textUrl ? (
             /\.xlsx$/i.test(filename)
               ? { make_csv_with: XLSX_CSV_LINE,
-                  upload_text_with: `curl -sS -X PUT -H 'content-type: text/plain' --upload-file '<the file>.txt' '${textUrl}'` }
+                  upload_text_with: `curl -sS -T '<the file>.txt' '${textUrl}'` }
               : { make_text_with: /\.pptx$/i.test(filename) ? PPTX_TEXT_LINE : /\.docx$/i.test(filename) ? DOCX_TEXT_LINE : `pdftotext -layout '<the file>' '<the file>.txt'`,
-                  upload_text_with: `curl -sS -X PUT -H 'content-type: text/plain' --upload-file '<the file>.txt' '${textUrl}'` }
+                  upload_text_with: `curl -sS -T '<the file>.txt' '${textUrl}'` }
           ) : {}),
           then: isText
-            ? "Run that from your shell; no API key is needed, the URL carries its own. Then: rows -> skillhub_load_file(document_id, target_table, natural_key) or skillhub_request_structure; a text document -> skillhub_load_text(document_id) so it is searchable and quotable."
+            ? "Run upload_with from your shell; no API key is needed, the ticket in the URL is the permission. Then: rows -> skillhub_load_file(document_id, target_table, natural_key) or skillhub_request_structure; a text document -> skillhub_load_text(document_id) so it is searchable and quotable."
             : /\.xlsx$/i.test(filename)
-              ? "Run upload_with to store the workbook as delivered -- COPY THE LINE EXACTLY, the token in it fails with InvalidJWT if re-typed. A spreadsheet is ROWS: run make_csv_with to get a CSV, then skillhub_upload_url for the CSV (its own sha256) and skillhub_load_file into the table that holds this data, or skillhub_request_structure with that document_id, natural_key and what you noticed. Do not hand-parse the sheet and do not look for openpyxl or LibreOffice -- the line needs neither. upload_text_with is only for the rare workbook that is a document rather than data."
-              : "From your shell: upload_with, then make_text_with, then upload_text_with. COPY EACH LINE EXACTLY -- the URL carries a signed token, and a token re-typed from memory fails with InvalidJWT. No API key is needed. Then skillhub_load_text(document_id): the store reads the text server-side, keeps the page numbers, and it becomes searchable by words and by meaning within seconds. Skip the text only for a file nobody will ask the contents of.",
-          note: "The URLs are single-use and expire. The file goes straight to the store; nothing in it passes through you.",
+              ? "Run upload_with to store the workbook as delivered. A spreadsheet is ROWS: run make_csv_with to get a CSV, then skillhub_upload_url for the CSV (its own sha256) and skillhub_load_file into the table that holds this data, or skillhub_request_structure with that document_id, natural_key and what you noticed. Do not hand-parse the sheet and do not look for openpyxl or LibreOffice -- the line needs neither. upload_text_with is only for the rare workbook that is a document rather than data."
+              : "From your shell, one at a time: upload_with, then make_text_with, then upload_text_with. No API key is needed; the ticket in each URL is the permission. Then skillhub_load_text(document_id): the store reads the text server-side, keeps the page numbers, and it becomes searchable by words and by meaning within seconds. Skip the text only for a file nobody will ask the contents of.",
+          note: "Each ticket works once and for ten minutes, for that one file. The file goes straight to the store; nothing in it passes through you. A reply of {stored: ...} means it arrived.",
         }, null, 2) }] });
       }
       if (tool.rpc === "__load_file__") {
@@ -809,7 +807,36 @@ async function handle(body: any, agent: string): Promise<unknown | null> {
   return rpcErr(id, -32601, `Unknown method: ${method}`);
 }
 
+// PUT /deliver/<ticket> -- the body is the file. Kong forwards /deliver to this function with
+// the prefix stripped, so the path seen here is /skillhub/<ticket>; a direct call would be
+// /deliver/<ticket>. Either way the ticket is the last segment, and it is the only input:
+// the object path comes from the ticket row, the caller's identity from the ticket row, and
+// the body goes to Storage without being read here. No key-auth on that route on purpose --
+// the ticket is the key, single-use, ten minutes, one object (DECISIONS 35).
+async function deliver(req: Request): Promise<Response> {
+  const nonce = new URL(req.url).pathname.split("/").filter(Boolean).pop() ?? "";
+  const ip = req.headers.get("x-forwarded-for")?.split(",")[0].trim() ?? req.headers.get("x-real-ip") ?? null;
+  const length = Number(req.headers.get("content-length") ?? "0");
+  if (length > 100 * 1024 * 1024) return Response.json({ error: "A file over 100 MB is not taken this way. Ask the caretaker." }, { status: 413 });
+  const t = await callRpc("upload_ticket_redeem", { p_nonce: nonce, p_ip: ip }) as any;
+  if (!t?.ok) return Response.json({ error: `Refused: ${t?.reason ?? "no ticket"}. Ask skillhub_upload_url for a fresh one.` }, { status: 403 });
+  const r = await fetch(`${SUPABASE_URL}/storage/v1/object/${BUCKET}/${t.path}`, {
+    method: "POST",
+    headers: { ...storageHeaders, "x-upsert": "true", "content-type": req.headers.get("content-type") ?? "application/octet-stream" },
+    body: req.body,
+  });
+  const text = await r.text();
+  if (!r.ok) {
+    await callRpc("upload_ticket_release", { p_nonce: nonce }).catch(() => {});
+    return Response.json({ error: `The store could not keep the file: ${r.status} ${text.slice(0, 200)}. The same ticket is still valid -- run the line again.` }, { status: 502 });
+  }
+  await callRpc("upload_ticket_done", { p_nonce: nonce, p_bytes: length || null }).catch(() => {});
+  return Response.json({ stored: t.path, bytes: length || null, document_id: t.document_id,
+    next: t.target === "text" ? "skillhub_load_text(document_id) so the store reads it." : "Now the text (make_text_with, upload_text_with), or load_file / request_structure for rows." });
+}
+
 Deno.serve(async (req: Request) => {
+  if (req.method === "PUT") return deliver(req);
   if (req.method === "GET" || req.method === "HEAD") {
     // Streamable HTTP: clients try GET for SSE. This server is request/response only.
     return new Response("The skillhub MCP server answers POST.", { status: 405, headers: { Allow: "POST" } });

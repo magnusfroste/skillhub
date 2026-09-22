@@ -290,6 +290,26 @@ begin
       'detail', format('Ran %s, %s.', cron_last::timestamp(0), cron_status), 'run', null);
   end if;
 
+  -- Files that were promised and never came (2026-09-22). A ticket for a FILE that expired
+  -- unredeemed is a document that exists as a pointer only: findable by name, nothing inside.
+  -- Before tickets this state was invisible -- run 1 of the four-file test left four such rows
+  -- and nothing said so. Text tickets are not counted: skipping the text is allowed.
+  begin
+    select count(*), string_agg(d.filename, ', ' order by t.issued_at desc)
+      into feeds_n, quiet_txt
+      from platform.upload_tickets t join public.documents d on d.id = t.document_id
+     where t.target = 'file' and t.done_at is null and t.expires_at < now()
+       and t.issued_at > now() - interval '7 days' and d.retired_at is null
+       and not exists (select 1 from platform.upload_tickets t2 where t2.document_id = t.document_id and t2.target = 'file' and t2.done_at is not null);
+  exception when undefined_table then feeds_n := 0;
+  end;
+  if coalesce(feeds_n, 0) > 0 then
+    cks := cks || jsonb_build_object('check','files that never arrived',
+      'state','attention',
+      'detail', format('%s document(s) registered this week whose file was never uploaded: %s. Each is a pointer with nothing inside -- findable by name, unable to answer a question. The agent that registered it can finish with skillhub_upload_url again, or retire it.', feeds_n, left(quiet_txt, 300)),
+      'run','select * from platform.v_uploads where state = ''never came'';');
+  end if;
+
   -- Work waiting on a person. An agent that asked for a table is blocked until this moves,
   -- and it can see that it is blocked, which makes the wait its own kind of cost.
   --

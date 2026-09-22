@@ -526,6 +526,38 @@ check "an outsider counts none of them, the team-mate counts one" \
 q "drop table public.probe_feed" >/dev/null
 q "delete from public.notes where title='Sales team probe'" >/dev/null
 q "update public.agents set team = null" >/dev/null
+# Upload tickets (2026-09-22): single-use, ten minutes, one object, atomic claim, hand-back on
+# a failed write, and the pointer-only state made visible. The measurement behind them is in
+# the comment on platform.upload_tickets.
+q "select public.skillhub_register_document('agent_01','ticket-probe.pdf',10,'application/pdf','tick0000probe','probe for the ticket tests','test','tick0000probe/ticket-probe.pdf')" >/dev/null
+TDOC="(select id from public.documents where sha256='tick0000probe')"
+q "select public.upload_ticket_issue($TDOC,'agent_01','file','tick0000probe/ticket-probe.pdf')" > /tmp/skillhub-ticket-nonce
+NONCE=$(cat /tmp/skillhub-ticket-nonce)
+check "a ticket is 32 hex characters" \
+  "select ('$NONCE' ~ '^[0-9a-f]{32}$')::text" "true"
+check "it redeems once, to the one path it names" \
+  "select (r->>'ok') || ':' || (r->>'path') || ':' || (r->>'agent') from public.upload_ticket_redeem('$NONCE','10.0.0.1') r" "true:tick0000probe/ticket-probe.pdf:agent_01"
+check "and a second claim while the first is in flight is refused" \
+  "select (r->>'ok') || ':' || (r->>'reason') from public.upload_ticket_redeem('$NONCE') r" "false:ticket is being used right now"
+q "select public.upload_ticket_release('$NONCE')" >/dev/null
+check "a failed write hands the ticket back, so the same line can be retried" \
+  "select r->>'ok' from public.upload_ticket_redeem('$NONCE') r" "true"
+q "select public.upload_ticket_done('$NONCE', 10)" >/dev/null
+check "once the bytes arrived it is used for good" \
+  "select (r->>'ok') || ':' || (r->>'reason') from public.upload_ticket_redeem('$NONCE') r" "false:ticket already used"
+check "a made-up ticket is refused without touching anything" \
+  "select (r->>'ok') || ':' || (r->>'reason') from public.upload_ticket_redeem('deadbeefdeadbeefdeadbeefdeadbeef') r" "false:unknown ticket"
+check "and a string that is not a ticket at all, likewise" \
+  "select r->>'reason' from public.upload_ticket_redeem('../../etc/passwd') r" "not a ticket"
+q "update platform.upload_tickets set expires_at = now() - interval '1 minute', done_at = null, redeemed_at = null where nonce='$NONCE'" >/dev/null
+check "an expired ticket is refused" \
+  "select r->>'reason' from public.upload_ticket_redeem('$NONCE') r" "ticket expired"
+check "and a file whose ticket expired unused is named by health as never having arrived" \
+  "select (c->>'state') || ':' || ((c->>'detail') like '%ticket-probe.pdf%')::text from jsonb_array_elements(platform.health()->'checks') c where c->>'check'='files that never arrived'" "attention:true"
+check "the register says the same in words" \
+  "select state from platform.v_uploads where filename='ticket-probe.pdf'" "never came"
+q "delete from public.documents where sha256='tick0000probe'" >/dev/null
+rm -f /tmp/skillhub-ticket-nonce
 check "retiring the note works too" \
   "select (public.skillhub_retire('agent_01','note',(select id::text from public.notes where title='Seed test'),'seed test cleanup') ? 'retired_by')::text" "true"
 

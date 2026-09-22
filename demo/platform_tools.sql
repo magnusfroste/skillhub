@@ -1172,6 +1172,102 @@ end $$;
 comment on function platform.load_registered_file(bigint,text,text,text) is 'Caretaker only: build the table a request asks for (observations as column comments), resolve it, and have the loader read the uploaded file into it.';
 
 -- ---------------------------------------------------------------------------
+-- Upload tickets: the agent never holds a token (2026-09-22, DECISIONS 35).
+--
+-- A file goes from the agent's machine straight to Storage -- never through a tool argument,
+-- which is a rule with a measurement behind it. Until today the way in was a signed URL, a
+-- JWT of some 300 characters that IS the authorisation, and the tool handed it to the agent
+-- as text. The only path from a tool result to the agent's shell runs through the model's
+-- own output, and a model does not copy a string like that, it generates it again. Measured
+-- over two runs on dev: five of twelve uploads failed with "InvalidJWT: signature verification
+-- failed", and decoding the tokens the agent sent showed altered payloads -- upsert:'false' as
+-- a string, an exp an hour in the past, one that was not base64 at all. The same model copied
+-- 36-character document ids correctly every single time.
+--
+-- So the long string moves from the model's mouth to the store's table. The tool issues a
+-- TICKET -- 32 hex characters, single-use, ten minutes, bound to one document and one target
+-- -- and the agent PUTs the file to /deliver/<ticket>. The function looks the ticket up,
+-- streams the body to the one path the ticket names, and marks it used. Same bearer
+-- semantics as the signed URL, stricter in two ways (single-use; the path is never the
+-- caller's to choose), and the agent's API key is not involved at any point: it proves
+-- itself once, inside the tool call that issues the ticket, and never leaves its MCP config.
+-- ---------------------------------------------------------------------------
+create table if not exists platform.upload_tickets (
+  nonce        text primary key,
+  document_id  uuid not null references public.documents(id) on delete cascade,
+  agent        text not null,
+  target       text not null check (target in ('file','text')),
+  path         text not null,             -- the storage object this ticket may write, and nothing else
+  issued_at    timestamptz not null default now(),
+  expires_at   timestamptz not null,
+  redeemed_at  timestamptz,               -- set the moment a PUT claims it; cleared again if the write failed
+  done_at      timestamptz,               -- set when the bytes are in Storage
+  bytes        bigint,
+  ip           text
+);
+create index if not exists upload_tickets_doc_idx on platform.upload_tickets (document_id, target);
+comment on table platform.upload_tickets is 'One row per upload the store has agreed to receive: which document, which object, who asked, and whether the bytes ever arrived. A ticket the agent was given and never used is a document that was registered and never uploaded -- platform.health() names those.';
+
+create or replace function public.upload_ticket_issue(p_document_id uuid, p_agent text, p_target text, p_path text)
+returns text language plpgsql security definer set search_path = public, platform as $$
+declare n text;
+begin
+  if p_target not in ('file','text') then raise exception 'target must be file or text'; end if;
+  -- 128 bits from the kernel, as hex: 32 characters the model copies as reliably as a uuid.
+  n := encode(extensions.gen_random_bytes(16), 'hex');
+  insert into platform.upload_tickets (nonce, document_id, agent, target, path, expires_at)
+  values (n, p_document_id, p_agent, p_target, p_path, now() + interval '10 minutes');
+  return n;
+end $$;
+comment on function public.upload_ticket_issue is 'Issues a single-use, ten-minute ticket to write one object. Called by the skillhub function inside an authenticated tool call; the ticket is what the agent gets, never a signed URL.';
+
+-- Claims the ticket atomically: two PUTs with the same nonce get exactly one success.
+create or replace function public.upload_ticket_redeem(p_nonce text, p_ip text default null)
+returns jsonb language plpgsql security definer set search_path = public, platform as $$
+declare t platform.upload_tickets%rowtype;
+begin
+  if p_nonce !~ '^[0-9a-f]{32}$' then return jsonb_build_object('ok', false, 'reason', 'not a ticket'); end if;
+  update platform.upload_tickets set redeemed_at = now(), ip = coalesce(p_ip, ip)
+   where nonce = p_nonce and redeemed_at is null and expires_at > now()
+  returning * into t;
+  if t.nonce is null then
+    select * into t from platform.upload_tickets where nonce = p_nonce;
+    return jsonb_build_object('ok', false, 'reason',
+      case when t.nonce is null then 'unknown ticket'
+           when t.done_at is not null then 'ticket already used'
+           when t.redeemed_at is not null then 'ticket is being used right now'
+           else 'ticket expired' end);
+  end if;
+  return jsonb_build_object('ok', true, 'document_id', t.document_id, 'path', t.path, 'target', t.target, 'agent', t.agent);
+end $$;
+
+create or replace function public.upload_ticket_done(p_nonce text, p_bytes bigint)
+returns void language sql security definer set search_path = public, platform as $$
+  update platform.upload_tickets set done_at = now(), bytes = p_bytes where nonce = p_nonce;
+$$;
+-- The write to Storage failed after the claim: hand the ticket back so the same curl can be
+-- retried, rather than sending the agent for a new one.
+create or replace function public.upload_ticket_release(p_nonce text)
+returns void language sql security definer set search_path = public, platform as $$
+  update platform.upload_tickets set redeemed_at = null where nonce = p_nonce and done_at is null;
+$$;
+revoke all on function public.upload_ticket_issue(uuid,text,text,text) from public;
+revoke all on function public.upload_ticket_redeem(text,text) from public;
+revoke all on function public.upload_ticket_done(text,bigint) from public;
+revoke all on function public.upload_ticket_release(text) from public;
+grant execute on function public.upload_ticket_issue(uuid,text,text,text), public.upload_ticket_redeem(text,text),
+  public.upload_ticket_done(text,bigint), public.upload_ticket_release(text) to service_role, postgres;
+
+-- The register, for people: what was promised and what arrived.
+create or replace view platform.v_uploads as
+select t.issued_at::timestamp(0) as issued, t.agent, d.filename, t.target,
+       case when t.done_at is not null then 'arrived' when t.expires_at > now() then 'open' else 'never came' end as state,
+       t.bytes, t.done_at::timestamp(0) as arrived_at, t.ip
+from platform.upload_tickets t join public.documents d on d.id = t.document_id
+order by t.issued_at desc;
+comment on view platform.v_uploads is 'Every upload the store agreed to receive, and whether the bytes came. "never came" for a file is a document that exists as a pointer only.';
+
+-- ---------------------------------------------------------------------------
 -- Last of all: publish the conventions skill from its sections, as a new version if the text
 -- changed and not at all if it did not. Every file has declared its section by now.
 -- ---------------------------------------------------------------------------

@@ -527,6 +527,32 @@ services:
             - admin
             - mcp
 
+  ## skillhub: /deliver -- where a file lands. PUT only, and no key-auth ON PURPOSE: the
+  ## ticket in the path is the key -- single-use, ten minutes, one object, issued inside an
+  ## authenticated tool call (DECISIONS 35). The signed-URL route this replaces was equally
+  ## key-less; what changed is that the agent copies 32 characters instead of 300, which a
+  ## model does reliably. Size and rate limits sit here, before the body reaches anything.
+  - name: skillhub-deliver
+    _comment: 'PUT /deliver/<ticket> -> http://functions:9000/skillhub/<ticket>'
+    url: http://functions:9000/skillhub
+    routes:
+      - name: skillhub-deliver
+        strip_path: true
+        methods:
+          - PUT
+        paths:
+          - /deliver
+    plugins:
+      - name: request-size-limiting
+        config:
+          allowed_payload_size: 100
+          size_unit: megabytes
+      - name: rate-limiting
+        config:
+          minute: 60
+          policy: local
+          fault_tolerant: true
+
   ## skillhub: the embedding job. `admin` (service_role) only -- the agents'
   ## keys must not be able to trigger it, and pg_cron reaches the function internally without Kong.
   - name: embed-job

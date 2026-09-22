@@ -207,7 +207,7 @@ order trades those few minutes for an error on every query.
 
 ## 5d. A document's own words
 
-Give an agent a PDF and the same words as before. It should now upload the file **and** its
+Give an agent a PDF and the same words as before. The lines it gets carry a 32-character ticket, not a signed URL: measured 2026-09-22, an agent re-typed five of twelve 300-character tokens and every upload with a re-typed token failed; none with a ticket has. It should now upload the file **and** its
 `pdftotext -layout` output with the two curl lines `skillhub_upload_url` gives, then
 `skillhub_load_text`. Within seconds `skillhub_search` finds a phrase from a late page with
 that passage as the excerpt, `skillhub_similar` names the page in `matched`, and

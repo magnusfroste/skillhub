@@ -1079,8 +1079,9 @@ store -- the caretaker guessed at `/storage/` and got 401 -- so `skillhub_downlo
 mirror of the upload: a signed URL for ten minutes, for a document the caller may read, plus
 one for the text sidecar when it exists. And `skillhub_upload_url` had offered the `pdftotext`
 line beside a `.pptx`, which cannot read one, so the deck sat catalogued and unsearchable. The
-text line is now per file type: `pdftotext` for a PDF, `unzip` and `sed` for `.pptx` and
-`.docx` -- office files are zip archives of XML and those two tools are on every machine -- and
+text line is now per file type: `pdftotext` for a PDF, a `python3` one-liner over `zipfile` for `.pptx` and `.docx` -- office
+files are zip archives of XML; the first version used `unzip` and `sed`, and `unzip` turned out
+not to exist in the agent's own container, which is the one machine the line is for -- and
 for `.xlsx` the honest answer, which is that a spreadsheet is rows and belongs in a table.
 
 ---

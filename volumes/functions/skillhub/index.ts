@@ -456,6 +456,13 @@ const BUCKET = "deliveries";
 const PUBLIC_URL = (Deno.env.get("SUPABASE_PUBLIC_URL") ?? "").replace(/\/$/, "");
 const storageHeaders = { apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` };
 
+// Text out of an office file without a single tool that is not already on the machine:
+// python3 and its zipfile module. The first version of these lines used unzip and sed and
+// was committed with the sentence "on every machine". Measured 2026-09-22 in the agent's own
+// container: unzip MISSING, python3 present. A line the agent cannot run is worse than none,
+// because it looks like the store's answer. Tested in that container before being written here.
+const PPTX_TEXT_LINE = "python3 -c \"import zipfile,re;f='<the file>';z=zipfile.ZipFile(f);open(f+'.txt','w').write('\\n'.join(re.sub('<[^>]+>',' ',z.read(n).decode().replace('</a:p>','\\n')) for n in sorted(z.namelist()) if re.match(r'ppt/slides/slide\\d+\\.xml$',n)))\"";
+const DOCX_TEXT_LINE = "python3 -c \"import zipfile,re;f='<the file>';z=zipfile.ZipFile(f);open(f+'.txt','w').write(re.sub('<[^>]+>',' ',z.read('word/document.xml').decode().replace('</w:p>','\\n')))\"";
 async function signedUploadUrl(path: string): Promise<string> {
   const r = await fetch(`${SUPABASE_URL}/storage/v1/object/upload/sign/${BUCKET}/${path}`, { method: "POST", headers: storageHeaders });
   const t = await r.text();
@@ -604,8 +611,8 @@ async function handle(body: any, agent: string): Promise<unknown | null> {
         }
         const textUrl = await signedUploadUrl(`${path}.txt`);
         const line =
-          /\.pptx$/i.test(filename) ? `unzip -p '${filename}' 'ppt/slides/slide*.xml' | sed -e 's#</a:p>#\\n#g' -e 's/<[^>]*>//g' > '${filename}.txt'`
-          : /\.docx$/i.test(filename) ? `unzip -p '${filename}' word/document.xml | sed -e 's#</w:p>#\\n#g' -e 's/<[^>]*>//g' > '${filename}.txt'`
+          /\.pptx$/i.test(filename) ? PPTX_TEXT_LINE.replaceAll("<the file>", filename)
+          : /\.docx$/i.test(filename) ? DOCX_TEXT_LINE.replaceAll("<the file>", filename)
           : `pdftotext -layout '${filename}' '${filename}.txt'`;
         return rpcOk(id, { content: [{ type: "text", text: JSON.stringify({
           document_id: docId, filename, new_document: false,
@@ -648,10 +655,10 @@ async function handle(body: any, agent: string): Promise<unknown | null> {
           // 2026-09-22 on a client install: a slide deck was uploaded with the pdftotext line
           // beside it, which cannot read a .pptx, so the file sat catalogued and unsearchable
           // until the caretaker went looking for the text itself. Office files are zip archives
-          // of XML; unzip and sed are on every machine, so no tool has to be installed.
+          // of XML, read with python3's zipfile -- see PPTX_TEXT_LINE for why not unzip.
           ...(textUrl ? { upload_text_with: (
-            /\.pptx$/i.test(filename) ? `unzip -p '<the file>' 'ppt/slides/slide*.xml' | sed -e 's#</a:p>#\\n#g' -e 's/<[^>]*>//g' > '<the file>.txt'`
-            : /\.docx$/i.test(filename) ? `unzip -p '<the file>' word/document.xml | sed -e 's#</w:p>#\\n#g' -e 's/<[^>]*>//g' > '<the file>.txt'`
+            /\.pptx$/i.test(filename) ? PPTX_TEXT_LINE
+            : /\.docx$/i.test(filename) ? DOCX_TEXT_LINE
             : /\.xlsx$/i.test(filename) ? `# a spreadsheet is ROWS, not text: save it as CSV and upload that instead, then skillhub_load_file. If it must be a document, produce '<the file>.txt' however you can and continue:`
             : `pdftotext -layout '<the file>' '<the file>.txt'`
           ) + ` && curl -sS -X PUT -H 'content-type: text/plain' --upload-file '<the file>.txt' '${textUrl}'` } : {}),
@@ -702,7 +709,7 @@ async function handle(body: any, agent: string): Promise<unknown | null> {
         try { raw = await downloadObject(isText ? path : `${path}.txt`); }
         catch (e) {
           if (isText) throw e;
-          throw new Error(`No text has been uploaded for ${filename}. Produce '${filename}.txt' with the upload_text_with line skillhub_upload_url gives for this file type (pdftotext for a PDF, unzip+sed for .pptx/.docx), upload it with that same line, then try again. skillhub_download_url hands you the file if you no longer have it.`);
+          throw new Error(`No text has been uploaded for ${filename}. Produce '${filename}.txt' with the upload_text_with line skillhub_upload_url gives for this file type (pdftotext for a PDF, python3 for .pptx/.docx), upload it with that same line, then try again. skillhub_download_url hands you the file if you no longer have it.`);
         }
         // pdftotext separates pages with form feeds. They become headings, so the chunker's
         // pointer and a citation can both say "page 7".

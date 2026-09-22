@@ -287,14 +287,15 @@ const TOOLS: Tool[] = [
   {
     name: "skillhub_upload_url",
     description:
-      "Hand a FILE to the store without retyping it: registers the file and returns one-time upload URLs plus the exact curl lines. The file goes beside the model, not through it. A file of ROWS (CSV; save a spreadsheet as CSV first): upload it, then skillhub_load_file into a table that exists, or skillhub_request_structure with document_id, natural_key and observations. A DOCUMENT people will ask about (a manual, a policy, a report): upload it, run pdftotext -layout on it and upload that text with the second curl line, then skillhub_load_text -- the store then holds the text verbatim, searchable, quotable by page. Never paste contents into a chat or a tool argument -- sixty rows that way took 36 calls and stopped at 19.",
+      "Hand a FILE to the store without retyping it: registers the file and returns one-time upload URLs plus the exact curl lines. The file goes beside the model, not through it. A file of ROWS (CSV; save a spreadsheet as CSV first): upload it, then skillhub_load_file into a table that exists, or skillhub_request_structure with document_id, natural_key and observations. A DOCUMENT people will ask about (a manual, a policy, a report): upload it, run pdftotext -layout on it and upload that text with the second curl line, then skillhub_load_text -- the store then holds the text verbatim, searchable, quotable by page. Never paste contents into a chat or a tool argument -- sixty rows that way took 36 calls and stopped at 19. To add or replace the TEXT of a document that is already here, pass text_for_document_id alone.",
     inputSchema: obj({
       filename: str("The file's name, e.g. tickets_export_2026-09.csv"),
       sha256: str("sha256 of the file (sha256sum <file>). Names the upload path and lets the store spot the same file delivered twice."),
       description: str("What the file contains and where it came from: 'monthly export of support tickets from the case system'."),
       bytes: { type: "integer", description: "Size in bytes, if you know it." },
       visibility: str("public (default), team or private. Who may see the document and read its text once loaded."),
-    }, ["filename", "sha256", "description"]),
+      text_for_document_id: str("ONLY when adding or replacing the TEXT of a document that is already in the store: its id. Returns just the text-upload line for that document, creates no new document. Then skillhub_load_text. Leave every other argument out."),
+    }, []),
     rpc: "__upload_url__",
     needsAgent: true,
   },
@@ -583,7 +584,39 @@ async function handle(body: any, agent: string): Promise<unknown | null> {
     if (tool.passAgent && agent) args.agent = agent;
 
     try {
+      if (tool.rpc === "__upload_url__" && args.text_for_document_id) {
+        // The text sidecar for a document that is ALREADY in the store. Until 2026-09-22 the
+        // only moment that URL existed was the original upload: an agent that had to add the
+        // text later -- because the deck had been uploaded with no text, or the wrong line --
+        // had no way back to it. On a client install the caretaker tried uploading the text as
+        // a NEW file, was told "already uploaded" without a curl line, created five stray
+        // document rows over five attempts, and finally hand-built a signed URL to the sidecar
+        // path with the service key. An ordinary agent could not have done the last step.
+        const docId = String(args.text_for_document_id);
+        const seen = await callRpc("skillhub_read", { kind: "document", id: docId, agent }) as any;
+        if (seen?.error) throw new Error(seen.error);
+        if (seen.owner !== agent && agent !== "service_role") {
+          throw new Error(`${docId} belongs to ${seen.owner}. Only its owner or the caretaker may load its text -- the same rule skillhub_load_text applies.`);
+        }
+        const { path, filename } = await documentPath(docId);
+        if (/\.(txt|md|csv|json)$/i.test(filename)) {
+          throw new Error(`${filename} is a text file already: run skillhub_load_text(document_id) directly.`);
+        }
+        const textUrl = await signedUploadUrl(`${path}.txt`);
+        const line =
+          /\.pptx$/i.test(filename) ? `unzip -p '${filename}' 'ppt/slides/slide*.xml' | sed -e 's#</a:p>#\\n#g' -e 's/<[^>]*>//g' > '${filename}.txt'`
+          : /\.docx$/i.test(filename) ? `unzip -p '${filename}' word/document.xml | sed -e 's#</w:p>#\\n#g' -e 's/<[^>]*>//g' > '${filename}.txt'`
+          : `pdftotext -layout '${filename}' '${filename}.txt'`;
+        return rpcOk(id, { content: [{ type: "text", text: JSON.stringify({
+          document_id: docId, filename, new_document: false,
+          // x-upsert, because a sidecar that exists already is the common case here: a wrong
+          // or partial text is being replaced, and a 409 would send the agent back to square one.
+          upload_text_with: `${line} && curl -sS -X PUT -H 'content-type: text/plain' -H 'x-upsert: true' --upload-file '${filename}.txt' '${textUrl}'`,
+          then: "Run that from your shell (skillhub_download_url gives you the file if it is not on this machine), then skillhub_load_text(document_id). No new document is created: the text lands beside the file it belongs to.",
+        }, null, 2) }] });
+      }
       if (tool.rpc === "__upload_url__") {
+        if (!args.filename || !args.description) throw new Error("filename, sha256 and description are required for a new file; for the text of a document already here, pass text_for_document_id alone.");
         const sha = String(args.sha256 ?? "").toLowerCase();
         if (!/^[a-f0-9]{64}$/.test(sha)) throw new Error("sha256 must be the 64-hex digest of the file: sha256sum <file>.");
         const filename = String(args.filename ?? "").replace(/[^A-Za-z0-9._ -]/g, "_");
@@ -598,7 +631,7 @@ async function handle(body: any, agent: string): Promise<unknown | null> {
         if (await objectExists(path)) {
           return rpcOk(id, { content: [{ type: "text", text: JSON.stringify({
             document_id: reg.id, path, already_uploaded: true, duplicate_of: reg.duplicate_of ?? null,
-            then: "This exact file is already in the store (same sha256). Skip the upload: go straight to skillhub_load_file into an existing table, or skillhub_request_structure with this document_id.",
+            then: "This exact file is already in the store (same sha256). Skip the upload: go straight to skillhub_load_file into an existing table, or skillhub_request_structure with this document_id. If what you need is to upload or replace its TEXT, call skillhub_upload_url again with text_for_document_id set to this id and nothing else.",
           }, null, 2) }] });
         }
         const url = await signedUploadUrl(path);

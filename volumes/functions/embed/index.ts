@@ -216,7 +216,7 @@ function origin(url: string): string {
 /** How many tokens one input may carry, if the server will say. TEI answers /info with
  *  max_input_length; vLLM answers /v1/models with max_model_len. OpenAI answers neither. */
 async function askServerForLimit(): Promise<{ tokens: number; from: string } | null> {
-  const auth = EMBEDDING_KEY ? { Authorization: `Bearer ${EMBEDDING_KEY}` } : {};
+  const auth: Record<string, string> = EMBEDDING_KEY ? { Authorization: `Bearer ${EMBEDDING_KEY}` } : {};
   const base = origin(EMBEDDING_URL);
   try {
     const r = await fetch(`${base}/info`, { headers: auth });

@@ -294,6 +294,7 @@ const TOOLS: Tool[] = [
       description: str("What the file contains and where it came from: 'monthly export of support tickets from the case system'."),
       bytes: { type: "integer", description: "Size in bytes, if you know it." },
       visibility: str("public (default), team or private. Who may see the document and read its text once loaded."),
+      source: str("Where it came from: system, sender, folder. Optional; the store adds who uploaded it."),
       text_for_document_id: str("ONLY when adding or replacing the TEXT of a document that is already in the store: its id. Returns just the text-upload line for that document, creates no new document. Then skillhub_load_text. Leave every other argument out."),
     }, []),
     rpc: "__upload_url__",
@@ -463,6 +464,11 @@ const storageHeaders = { apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_K
 // because it looks like the store's answer. Tested in that container before being written here.
 const PPTX_TEXT_LINE = "python3 -c \"import zipfile,re;f='<the file>';z=zipfile.ZipFile(f);open(f+'.txt','w').write('\\n'.join(re.sub('<[^>]+>',' ',z.read(n).decode().replace('</a:p>','\\n')) for n in sorted(z.namelist()) if re.match(r'ppt/slides/slide\\d+\\.xml$',n)))\"";
 const DOCX_TEXT_LINE = "python3 -c \"import zipfile,re;f='<the file>';z=zipfile.ZipFile(f);open(f+'.txt','w').write(re.sub('<[^>]+>',' ',z.read('word/document.xml').decode().replace('</w:p>','\\n')))\"";
+// A spreadsheet is rows, and the agent's machine has neither openpyxl nor LibreOffice -- measured
+// 2026-09-22: an agent spent six calls hand-parsing sheet XML, and the session died of the
+// context that cost. First sheet to CSV, shared strings and inline strings both, cells kept
+// in their columns so blanks stay aligned. Tested on both kinds of file in that container.
+const XLSX_CSV_LINE = "python3 -c \"import zipfile,re,csv;f='<the file>';z=zipfile.ZipFile(f);ss=[re.sub('<[^>]+>','',m) for m in re.findall(r'<si>(.*?)</si>',z.read('xl/sharedStrings.xml').decode(),re.S)] if 'xl/sharedStrings.xml' in z.namelist() else [];sh=sorted(n for n in z.namelist() if re.match(r'xl/worksheets/sheet\\d+\\.xml$',n))[0];w=csv.writer(open(f+'.csv','w',newline=''));col=lambda a:sum((ord(ch)-64)*26**i for i,ch in enumerate(reversed(re.match('[A-Z]+',a).group())))-1;strip=lambda v:re.sub('<[^>]+>','',v)\nfor row in re.findall(r'<row[^>]*>(.*?)</row>',z.read(sh).decode(),re.S):\n cells={};[cells.__setitem__(col(a),(ss[int(strip(v))] if t=='s' else strip(v))) for a,t,v in re.findall(r'<c r=\\\"([A-Z]+\\d+)\\\"(?:[^>]*?t=\\\"(\\w+)\\\")?[^>]*>(.*?)</c>',row,re.S)]\n w.writerow([cells.get(i,'') for i in range(max(cells)+1)] if cells else [])\"";
 async function signedUploadUrl(path: string): Promise<string> {
   const r = await fetch(`${SUPABASE_URL}/storage/v1/object/upload/sign/${BUCKET}/${path}`, { method: "POST", headers: storageHeaders });
   const t = await r.text();
@@ -630,7 +636,11 @@ async function handle(body: any, agent: string): Promise<unknown | null> {
         const path = `${sha}/${filename}`;
         const reg = await callRpc("skillhub_register_document", {
           agent, filename, sha256: sha, description: String(args.description ?? ""), bytes: args.bytes ?? null,
-          mime_type: filename.toLowerCase().endsWith(".csv") ? "text/csv" : null, source: "uploaded by " + agent, path,
+          // `source` is accepted here because skillhub_register_document takes it and an agent that
+          // has seen both expects it: 2026-09-22 four uploads were refused for the unknown field
+          // before the agent folded the source into the description. A rejected call costs a round.
+          mime_type: filename.toLowerCase().endsWith(".csv") ? "text/csv" : null,
+          source: (args.source ? String(args.source) + " -- " : "") + "uploaded by " + agent, path,
           visibility: args.visibility ?? "public",
         }) as any;
         // Same bytes, same path: a file already uploaded needs no second upload, and a signed
@@ -659,12 +669,14 @@ async function handle(body: any, agent: string): Promise<unknown | null> {
           ...(textUrl ? { upload_text_with: (
             /\.pptx$/i.test(filename) ? PPTX_TEXT_LINE
             : /\.docx$/i.test(filename) ? DOCX_TEXT_LINE
-            : /\.xlsx$/i.test(filename) ? `# a spreadsheet is ROWS, not text: save it as CSV and upload that instead, then skillhub_load_file. If it must be a document, produce '<the file>.txt' however you can and continue:`
+            : /\.xlsx$/i.test(filename) ? `# a spreadsheet is ROWS, not text -- this makes '<the file>.csv' from its first sheet with nothing installed; then skillhub_upload_url THAT file and skillhub_load_file it (or skillhub_request_structure). Only if it must be a document, make '<the file>.txt' instead and continue: ` + XLSX_CSV_LINE + ` #`
             : `pdftotext -layout '<the file>' '<the file>.txt'`
           ) + ` && curl -sS -X PUT -H 'content-type: text/plain' --upload-file '<the file>.txt' '${textUrl}'` } : {}),
           then: isText
             ? "Run that from your shell; no API key is needed, the URL carries its own. Then: rows -> skillhub_load_file(document_id, target_table, natural_key) or skillhub_request_structure; a text document -> skillhub_load_text(document_id) so it is searchable and quotable."
-            : "Run both lines from your shell; no API key is needed, the URLs carry their own. Then skillhub_load_text(document_id): the store reads the text server-side, keeps the page numbers, and it becomes searchable by words and by meaning within seconds. Skip the second line only for a file nobody will ask the contents of.",
+            : /\.xlsx$/i.test(filename)
+              ? "Run the first line to upload the workbook as delivered. A spreadsheet is ROWS: run the python line in upload_text_with to get a CSV, then skillhub_upload_url for the CSV (its own sha256) and skillhub_load_file into the table that holds this data, or skillhub_request_structure with that document_id, natural_key and what you noticed. Do not hand-parse the sheet and do not look for openpyxl or LibreOffice -- the line needs neither."
+              : "Run both lines from your shell; no API key is needed, the URLs carry their own. Then skillhub_load_text(document_id): the store reads the text server-side, keeps the page numbers, and it becomes searchable by words and by meaning within seconds. Skip the second line only for a file nobody will ask the contents of.",
           note: "The URLs are single-use and expire. The file goes straight to the store; nothing in it passes through you.",
         }, null, 2) }] });
       }

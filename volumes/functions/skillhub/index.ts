@@ -483,8 +483,12 @@ async function signedUploadUrl(path: string): Promise<string> {
 async function signedDownloadUrl(path: string): Promise<string> {
   const r = await fetch(`${SUPABASE_URL}/storage/v1/object/sign/${BUCKET}/${path}`, { method: "POST", headers: { ...storageHeaders, "content-type": "application/json" }, body: JSON.stringify({ expiresIn: 600 }) });
   const t = await r.text();
-  if (!r.ok) throw new Error(`Storage would not sign an upload for ${path}: ${r.status} ${t.slice(0, 200)}`);
-  const rel = JSON.parse(t).url as string;            // "/object/upload/sign/<bucket>/<path>?token=..."
+  if (!r.ok) throw new Error(`Storage would not sign a download for ${path}: ${r.status} ${t.slice(0, 200)} -- for a document whose file was never uploaded this is a 404: it is a pointer, and the text (if any) is what the store holds.`);
+  // The download sign answers { signedURL }, the upload sign { url }. Copied from the upload
+  // helper on 2026-09-22 with the field name unchanged, this crashed on every document that
+  // DID exist and the agent's MCP client tripped its circuit breaker for a minute.
+  const j = JSON.parse(t); const rel = (j.signedURL ?? j.url) as string;   // "/object/sign/<bucket>/<path>?token=..."
+  if (!rel) throw new Error(`Storage signed nothing for ${path}: ${t.slice(0, 200)}`);
   const base = PUBLIC_URL || SUPABASE_URL;
   return `${base}/storage/v1${rel.startsWith("/") ? rel : "/" + rel}`;
 }

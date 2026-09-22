@@ -267,6 +267,14 @@ const TOOLS: Tool[] = [
     needsAgent: true,
   },
   {
+    name: "skillhub_download_url",
+    description:
+      "Get a file BACK OUT of the store: a signed URL, valid ten minutes, for a document you may read -- and a second one for its text sidecar if one was uploaded. Use it when you have to work on the file itself: extract text from a slide deck or a spreadsheet that has none yet, check what was actually delivered, convert it. curl the URL from your shell; nothing passes through the model.",
+    inputSchema: obj({ document_id: str("The document's id, from skillhub_overview or skillhub_search.") }, ["document_id"]),
+    rpc: "__download_url__",
+    needsAgent: true,
+  },
+  {
     name: "skillhub_load_text",
     description:
       "After uploading a document and its pdftotext output with the two curl lines from skillhub_upload_url: reads the text from Storage server-side, keeps the page breaks as page numbers, and stores it verbatim -- no page passes through you. From then on the document is searched by words and by meaning, a hit names the page, skillhub_read gives it whole or by pages, and a quotation is the document's own words. A .txt, .md or .csv needs no sidecar; its own contents are loaded. Owner or caretaker only.",
@@ -455,6 +463,17 @@ async function signedUploadUrl(path: string): Promise<string> {
   const base = PUBLIC_URL || SUPABASE_URL;
   return `${base}/storage/v1${rel.startsWith("/") ? rel : "/" + rel}`;
 }
+// The mirror of the upload: a signed URL that lets the holder READ one object for ten
+// minutes. Until 2026-09-22 nothing handed a file back out -- a caretaker that had to extract
+// text from a slide deck guessed at /storage/ and got 401.
+async function signedDownloadUrl(path: string): Promise<string> {
+  const r = await fetch(`${SUPABASE_URL}/storage/v1/object/sign/${BUCKET}/${path}`, { method: "POST", headers: { ...storageHeaders, "content-type": "application/json" }, body: JSON.stringify({ expiresIn: 600 }) });
+  const t = await r.text();
+  if (!r.ok) throw new Error(`Storage would not sign an upload for ${path}: ${r.status} ${t.slice(0, 200)}`);
+  const rel = JSON.parse(t).url as string;            // "/object/upload/sign/<bucket>/<path>?token=..."
+  const base = PUBLIC_URL || SUPABASE_URL;
+  return `${base}/storage/v1${rel.startsWith("/") ? rel : "/" + rel}`;
+}
 async function objectExists(path: string): Promise<boolean> {
   const r = await fetch(`${SUPABASE_URL}/storage/v1/object/info/authenticated/${BUCKET}/${path}`, { headers: storageHeaders });
   return r.ok;
@@ -592,7 +611,17 @@ async function handle(body: any, agent: string): Promise<unknown | null> {
         return rpcOk(id, { content: [{ type: "text", text: JSON.stringify({
           document_id: reg.id, path, already_uploaded: false, duplicate_of: reg.duplicate_of ?? null,
           upload_with: `curl -sS -X PUT -H 'content-type: ${mime}' --upload-file '<the file>' '${url}'`,
-          ...(textUrl ? { upload_text_with: `pdftotext -layout '<the file>' '<the file>.txt' && curl -sS -X PUT -H 'content-type: text/plain' --upload-file '<the file>.txt' '${textUrl}'` } : {}),
+          // One line per file type, and it has to exist for the types people actually hand over.
+          // 2026-09-22 on a client install: a slide deck was uploaded with the pdftotext line
+          // beside it, which cannot read a .pptx, so the file sat catalogued and unsearchable
+          // until the caretaker went looking for the text itself. Office files are zip archives
+          // of XML; unzip and sed are on every machine, so no tool has to be installed.
+          ...(textUrl ? { upload_text_with: (
+            /\.pptx$/i.test(filename) ? `unzip -p '<the file>' 'ppt/slides/slide*.xml' | sed -e 's#</a:p>#\\n#g' -e 's/<[^>]*>//g' > '<the file>.txt'`
+            : /\.docx$/i.test(filename) ? `unzip -p '<the file>' word/document.xml | sed -e 's#</w:p>#\\n#g' -e 's/<[^>]*>//g' > '<the file>.txt'`
+            : /\.xlsx$/i.test(filename) ? `# a spreadsheet is ROWS, not text: save it as CSV and upload that instead, then skillhub_load_file. If it must be a document, produce '<the file>.txt' however you can and continue:`
+            : `pdftotext -layout '<the file>' '<the file>.txt'`
+          ) + ` && curl -sS -X PUT -H 'content-type: text/plain' --upload-file '<the file>.txt' '${textUrl}'` } : {}),
           then: isText
             ? "Run that from your shell; no API key is needed, the URL carries its own. Then: rows -> skillhub_load_file(document_id, target_table, natural_key) or skillhub_request_structure; a text document -> skillhub_load_text(document_id) so it is searchable and quotable."
             : "Run both lines from your shell; no API key is needed, the URLs carry their own. Then skillhub_load_text(document_id): the store reads the text server-side, keeps the page numbers, and it becomes searchable by words and by meaning within seconds. Skip the second line only for a file nobody will ask the contents of.",
@@ -617,6 +646,22 @@ async function handle(body: any, agent: string): Promise<unknown | null> {
           note: "Read skillhub_read kind=table for the column comments before you analyse: that is where the reading rules live.",
         }, null, 2) }] });
       }
+      if (tool.rpc === "__download_url__") {
+        // The read tool applies the same visibility rule as everything else; a document the
+        // caller may not read answers with an error there, and that is the answer here too.
+        const seen = await callRpc("skillhub_read", { kind: "document", id: String(args.document_id ?? ""), agent }) as any;
+        if (seen?.error) throw new Error(seen.error);
+        const { path, filename } = await documentPath(String(args.document_id ?? ""));
+        const isText = /\.(txt|md|csv|json)$/i.test(filename);
+        const fileUrl = await signedDownloadUrl(path);
+        const textUrl = !isText && await objectExists(`${path}.txt`) ? await signedDownloadUrl(`${path}.txt`) : null;
+        return rpcOk(id, { content: [{ type: "text", text: JSON.stringify({
+          document_id: args.document_id, filename,
+          download_with: `curl -sS -o '${filename}' '${fileUrl}'`,
+          ...(textUrl ? { download_text_with: `curl -sS -o '${filename}.txt' '${textUrl}'` } : {}),
+          note: "Valid for ten minutes, single object, no key needed. If you produce text from this file, upload it beside the file (skillhub_upload_url gives the line) and run skillhub_load_text so the store holds it too.",
+        }, null, 2) }] });
+      }
       if (tool.rpc === "__load_text__") {
         const { path, filename } = await documentPath(String(args.document_id ?? ""));
         const isText = /\.(txt|md|csv|json)$/i.test(filename);
@@ -624,7 +669,7 @@ async function handle(body: any, agent: string): Promise<unknown | null> {
         try { raw = await downloadObject(isText ? path : `${path}.txt`); }
         catch (e) {
           if (isText) throw e;
-          throw new Error(`No text has been uploaded for ${filename}. Run: pdftotext -layout '${filename}' '${filename}.txt' and upload it with the upload_text_with line from skillhub_upload_url, then try again.`);
+          throw new Error(`No text has been uploaded for ${filename}. Produce '${filename}.txt' with the upload_text_with line skillhub_upload_url gives for this file type (pdftotext for a PDF, unzip+sed for .pptx/.docx), upload it with that same line, then try again. skillhub_download_url hands you the file if you no longer have it.`);
         }
         // pdftotext separates pages with form feeds. They become headings, so the chunker's
         // pointer and a citation can both say "page 7".

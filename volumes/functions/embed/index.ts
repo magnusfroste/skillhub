@@ -400,67 +400,80 @@ Deno.serve(async (req: Request) => {
     return Response.json({ status: "error", message }, { status: 500 });
   }
 
-  // Vectors whose object was retired, made private or deleted. The query side filters them
-  // anyway, but an index that holds them reports numbers nobody can act on.
-  let pruned = 0;
-  try { pruned = Number(await rpc("embed_prune", {})) || 0; } catch { /* not fatal */ }
-
+  // One pass at a time. The cron, the index-on-write trigger and reindex() all call this, and
+  // two of them overlapping embed the same object twice and collide on its key (the comment
+  // on public.index_run_begin has the incident). A refused pass is not a failure and is not
+  // recorded as one: the pass that holds the lock is doing the work.
+  if (!(await rpc("index_run_begin", {}))) {
+    return Response.json({ status: "skipped", reason: "another indexing pass started less than ten minutes ago and is presumably still running" });
+  }
   try {
-    let objects = 0, saved = 0, chunks = 0, truncated = 0, requests = 0, passes = 0, cutLongest = 0;
-    const errors: string[] = [];
-    let ranOut = false;
-    for (;;) {
-      const p = await onePass(s, batch);
-      passes++;
-      objects += p.objects; saved += p.saved; chunks += p.chunks;
-      truncated += p.truncated; requests += p.requests; errors.push(...p.errors);
-      cutLongest = Math.max(cutLongest, p.cutLongest);
-      if (p.truncated > 0) break;   // the ratio is wrong for this content; resize, then go on
-      if (p.objects === 0) break;                 // nothing left
-      if (p.saved === 0) break;                   // no progress: everything in that pass failed
-      if (Date.now() >= deadline) { ranOut = true; break; }
-    }
 
-    // A cut is a measurement: that input held more than the budget in the characters it
-    // had, so the true ratio is below length/budget. Record a ratio under that and the
-    // next run's chunks are smaller -- the store corrects itself instead of waiting for
-    // somebody to notice a number nobody is watching.
-    let ratioNote: string | null = null;
-    if (truncated > 0 && s.limit_source === "env") {
-      ratioNote = `${truncated} chunk(s) did not fit and were left unindexed. EMBEDDING_MAX_CHARS is pinning the chunk size at ${s.max_chars}; lower it (this content needs about ${Math.floor((cutLongest / tokenBudget) * 0.9 * tokenBudget * 0.85)}) or unset it and let the probe size them.`;
-      await rpc("embedder_save", { p: { last_error: ratioNote } });
-    } else if (truncated > 0 && cutLongest > 0 && tokenBudget > 0) {
-      const safer = Math.max(1, Math.min(Number(s.chars_per_token) || CHARS_PER_TOKEN, (cutLongest / tokenBudget) * 0.9));
-      if (safer < (Number(s.chars_per_token) || CHARS_PER_TOKEN)) {
-        await rpc("embedder_save", { p: { chars_per_token: safer, max_chars: Math.floor(tokenBudget * safer * 0.85) } });
-        ratioNote = `Chunks were too big for this content: ${truncated} did not fit and were left unindexed. Characters per token lowered to ${safer.toFixed(2)} and chunk size to ${Math.floor(tokenBudget * safer * 0.85)}; the next run embeds them in pieces that fit.`;
+    // Vectors whose object was retired, made private or deleted. The query side filters them
+    // anyway, but an index that holds them reports numbers nobody can act on.
+    let pruned = 0;
+    try { pruned = Number(await rpc("embed_prune", {})) || 0; } catch { /* not fatal */ }
+
+    try {
+      let objects = 0, saved = 0, chunks = 0, truncated = 0, requests = 0, passes = 0, cutLongest = 0;
+      const errors: string[] = [];
+      let ranOut = false;
+      for (;;) {
+        const p = await onePass(s, batch);
+        passes++;
+        objects += p.objects; saved += p.saved; chunks += p.chunks;
+        truncated += p.truncated; requests += p.requests; errors.push(...p.errors);
+        cutLongest = Math.max(cutLongest, p.cutLongest);
+        if (p.truncated > 0) break;   // the ratio is wrong for this content; resize, then go on
+        if (p.objects === 0) break;                 // nothing left
+        if (p.saved === 0) break;                   // no progress: everything in that pass failed
+        if (Date.now() >= deadline) { ranOut = true; break; }
       }
+
+      // A cut is a measurement: that input held more than the budget in the characters it
+      // had, so the true ratio is below length/budget. Record a ratio under that and the
+      // next run's chunks are smaller -- the store corrects itself instead of waiting for
+      // somebody to notice a number nobody is watching.
+      let ratioNote: string | null = null;
+      if (truncated > 0 && s.limit_source === "env") {
+        ratioNote = `${truncated} chunk(s) did not fit and were left unindexed. EMBEDDING_MAX_CHARS is pinning the chunk size at ${s.max_chars}; lower it (this content needs about ${Math.floor((cutLongest / tokenBudget) * 0.9 * tokenBudget * 0.85)}) or unset it and let the probe size them.`;
+        await rpc("embedder_save", { p: { last_error: ratioNote } });
+      } else if (truncated > 0 && cutLongest > 0 && tokenBudget > 0) {
+        const safer = Math.max(1, Math.min(Number(s.chars_per_token) || CHARS_PER_TOKEN, (cutLongest / tokenBudget) * 0.9));
+        if (safer < (Number(s.chars_per_token) || CHARS_PER_TOKEN)) {
+          await rpc("embedder_save", { p: { chars_per_token: safer, max_chars: Math.floor(tokenBudget * safer * 0.85) } });
+          ratioNote = `Chunks were too big for this content: ${truncated} did not fit and were left unindexed. Characters per token lowered to ${safer.toFixed(2)} and chunk size to ${Math.floor(tokenBudget * safer * 0.85)}; the next run embeds them in pieces that fit.`;
+        }
+      }
+      await rpc("embedder_save", { p: { status: saved || !errors.length ? "ok" : "error", last_run: now(),
+        last_embedded: saved, last_failed: errors.length, last_truncated: truncated,
+        last_error: ratioNote ?? errors[0] ?? null } });
+
+      await note({ model: s.model, dimension: s.dimension, objects, embedded: saved, chunks,
+                   truncated, failed: errors.length, requests, pruned, error: ratioNote ?? errors[0] ?? null });
+
+      return Response.json({
+        status: "done",
+        model: s.model, dimension: s.dimension, chunk_chars: s.chunk_chars, the_model_accepts: s.max_chars,
+        limit_from: s.limit_source,
+        requests, max_inputs_per_request: EMBEDDING_MAX_INPUTS, passes,
+        objects, embedded: saved, chunks, pruned, tokens: runTokens,
+        truncated, failed: errors.length, errors: errors.slice(0, 5),
+        ...(ratioNote ? { resized: ratioNote } : {}),
+        ...(dimNote ? { dimension_note: dimNote } : {}),
+        comment: objects === 0 ? "Nothing was waiting."
+          : ranOut ? `Budget of ${budgetMs / 1000}s spent -- run again to continue.`
+          : errors.length && !saved ? "Nothing could be embedded; see errors."
+          : "Everything that was waiting is embedded.",
+      });
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      try { await rpc("embedder_save", { p: { status: "error", last_run: now(), last_error: message } }); } catch { /* nothing more to do */ }
+      await note({ model: EMBEDDING_MODEL, error: message });
+      return Response.json({ status: "error", message }, { status: 500 });
     }
-    await rpc("embedder_save", { p: { status: saved || !errors.length ? "ok" : "error", last_run: now(),
-      last_embedded: saved, last_failed: errors.length, last_truncated: truncated,
-      last_error: ratioNote ?? errors[0] ?? null } });
 
-    await note({ model: s.model, dimension: s.dimension, objects, embedded: saved, chunks,
-                 truncated, failed: errors.length, requests, pruned, error: ratioNote ?? errors[0] ?? null });
-
-    return Response.json({
-      status: "done",
-      model: s.model, dimension: s.dimension, chunk_chars: s.chunk_chars, the_model_accepts: s.max_chars,
-      limit_from: s.limit_source,
-      requests, max_inputs_per_request: EMBEDDING_MAX_INPUTS, passes,
-      objects, embedded: saved, chunks, pruned, tokens: runTokens,
-      truncated, failed: errors.length, errors: errors.slice(0, 5),
-      ...(ratioNote ? { resized: ratioNote } : {}),
-      ...(dimNote ? { dimension_note: dimNote } : {}),
-      comment: objects === 0 ? "Nothing was waiting."
-        : ranOut ? `Budget of ${budgetMs / 1000}s spent -- run again to continue.`
-        : errors.length && !saved ? "Nothing could be embedded; see errors."
-        : "Everything that was waiting is embedded.",
-    });
-  } catch (e) {
-    const message = e instanceof Error ? e.message : String(e);
-    try { await rpc("embedder_save", { p: { status: "error", last_run: now(), last_error: message } }); } catch { /* nothing more to do */ }
-    await note({ model: EMBEDDING_MODEL, error: message });
-    return Response.json({ status: "error", message }, { status: 500 });
+  } finally {
+    await rpc("index_run_end", {}).catch(() => {});
   }
 });

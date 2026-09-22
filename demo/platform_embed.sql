@@ -213,8 +213,12 @@ begin
   if n = 0 then raise exception 'No vectors to save for %/%.', p_source, p_id; end if;
   delete from platform.embeddings where source = p_source and id = p_id and model = p_model;
   for k in 0 .. n - 1 loop
+    -- The lock above makes two writers of one object rare; this makes it harmless. A second
+    -- writer carries the same text at the same hash, so overwriting is the right answer.
     insert into platform.embeddings (source, id, model, chunk, head, vector, text_hash, chunk_chars)
-    values (p_source, p_id, p_model, k, left(p_heads ->> k, 160), (p_vectors -> k #>> '{}')::vector, p_text_hash, p_chunk_chars);
+    values (p_source, p_id, p_model, k, left(p_heads ->> k, 160), (p_vectors -> k #>> '{}')::vector, p_text_hash, p_chunk_chars)
+    on conflict (source, id, model, chunk) do update
+      set head = excluded.head, vector = excluded.vector, text_hash = excluded.text_hash, chunk_chars = excluded.chunk_chars;
   end loop;
   return jsonb_build_object('source', p_source, 'id', p_id, 'model', p_model, 'chunks', n);
 end $$;
@@ -244,6 +248,43 @@ create table if not exists platform.embedder (
   chars_per_token numeric,      -- measured on this endpoint's tokenizer, not assumed
   last_error    text
 );
+-- One indexing pass at a time (2026-09-22). Three things call /embed: the cron every five
+-- minutes, the index-on-write trigger on EVERY public write, and platform.reindex(). Nothing
+-- stopped them overlapping, and on a client install they did: a caretaker ran a reindex on a
+-- slow embedder while writing notes, each note fired a pass of its own, and two passes took
+-- the same document -- neither saw a current embedding -- and embedded it twice. The save is
+-- delete-then-insert; the second insert waited on the first's uncommitted key and then failed
+-- with "duplicate key value violates unique constraint embeddings_pkey". Six runs in a row,
+-- always the same object, because candidates come in a stable order and every overlapping
+-- pass starts at the head of the same list. Tokens paid twice, and the object reported as
+-- failed when it was in fact indexed.
+--
+-- A row lock on the embedder row, not a session advisory lock: the indexer reaches the
+-- database through PostgREST on a pooled connection, so nothing session-scoped survives from
+-- one call to the next. Ten minutes is the stale bound -- a pass is capped at four minutes of
+-- budget, and a crashed runtime must not hold the index forever.
+alter table platform.embedder add column if not exists running_since timestamptz;
+comment on column platform.embedder.running_since is 'Set while an indexing pass runs, cleared when it ends. A second pass that finds it set within ten minutes stops without embedding anything.';
+
+create or replace function public.index_run_begin() returns boolean
+language plpgsql security definer set search_path = public, platform as $$
+declare got boolean := false;
+begin
+  insert into platform.embedder (id) values (1) on conflict (id) do nothing;
+  update platform.embedder set running_since = now()
+   where id = 1 and (running_since is null or running_since < now() - interval '10 minutes')
+  returning true into got;
+  return coalesce(got, false);
+end $$;
+comment on function public.index_run_begin() is 'Claims the index for one pass. False means another pass started less than ten minutes ago and is presumably still running: do nothing and say so.';
+
+create or replace function public.index_run_end() returns void
+language sql security definer set search_path = public, platform as $$
+  update platform.embedder set running_since = null where id = 1;
+$$;
+comment on function public.index_run_end() is 'Releases the index after a pass, whatever the pass did.';
+
+
 alter table platform.embedder add column if not exists last_truncated int;
 alter table platform.embedder add column if not exists chunk_chars int;
 alter table platform.embedder add column if not exists chars_per_token numeric;

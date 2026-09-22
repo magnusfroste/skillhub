@@ -1048,6 +1048,43 @@ differ. Two copies of an onboarding block would otherwise become two rulebooks.
 
 ---
 
+## 34. Three callers, no lock: what the client's caretaker found
+
+**2026-09-22.** On the client's instance the caretaker reported six failed indexing runs, all on
+the same slide deck, each with a duplicate-key error -- and, having read `caretaker-operations`,
+correctly deleted the stranded chunk (the one delete the standard permits) and set out to extract
+the deck's text itself. What it had found was ours.
+
+**The race.** Three things call `/embed`: the cron every five minutes, the index-on-write
+trigger on *every* public write, and `platform.reindex()`. Nothing stopped them overlapping. The
+caretaker had run a reindex on a slow embedder while writing notes; each note fired a pass of
+its own; two passes took the same document -- neither saw a current embedding -- and embedded it
+twice. The save is delete-then-insert, so the second insert waited on the first's uncommitted
+key and failed the moment it committed. Always the same object, because candidates come in a
+stable order and every overlapping pass starts at the head of the same list. Tokens paid twice,
+an object reported as failed that was in fact indexed, and a caretaker sent on an errand.
+
+**The fix is a row, not a session.** `public.index_run_begin()` claims `platform.embedder` for
+one pass and refuses a second within ten minutes; `index_run_end()` releases it, in a `finally`.
+Not an advisory lock, because the indexer reaches the database through PostgREST on a pooled
+connection and nothing session-scoped survives from one call to the next. Ten minutes is the
+stale bound: a pass is capped at four minutes of budget, and a runtime that dies holding the
+index must not hold it forever. A refused pass answers `skipped` and records nothing -- it is
+not a failure, the pass that holds the lock is doing the work. And `embed_save_chunks` now
+upserts on the key, so the race that remains is harmless rather than fatal: a second writer
+carries the same text at the same hash.
+
+**Two more things the same errand showed.** An agent had no way to get a file *back out* of the
+store -- the caretaker guessed at `/storage/` and got 401 -- so `skillhub_download_url` is the
+mirror of the upload: a signed URL for ten minutes, for a document the caller may read, plus
+one for the text sidecar when it exists. And `skillhub_upload_url` had offered the `pdftotext`
+line beside a `.pptx`, which cannot read one, so the deck sat catalogued and unsearchable. The
+text line is now per file type: `pdftotext` for a PDF, `unzip` and `sed` for `.pptx` and
+`.docx` -- office files are zip archives of XML and those two tools are on every machine -- and
+for `.xlsx` the honest answer, which is that a spreadsheet is rows and belongs in a table.
+
+---
+
 ## What this does not do yet
 
 Named, measured where possible, and deliberately not built:

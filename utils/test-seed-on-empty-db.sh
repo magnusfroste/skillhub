@@ -211,6 +211,24 @@ check "the caretaker's answer reaches the agent" \
 # while it was public. Found 2026-09-16 when a rebuild came back six objects lighter.
 q "select public.skillhub_write_note('agent_01','Vector visibility probe','A public note written by the empty-database test, retired a moment later to pin that a retired object stops being findable by meaning.')" >/dev/null
 q "select public.embed_save_chunks('note', (select id::text from public.notes where title='Vector visibility probe'), 'probe', jsonb_build_array(to_jsonb(array_fill(0::real,array[1536]))), to_jsonb(array['x']), 'h')" >/dev/null
+# One indexing pass at a time (2026-09-22): three callers, no lock, and on a client install two
+# overlapping passes embedded the same document and collided on its key six runs in a row.
+check "the first pass claims the index, the second is refused" \
+  "select public.index_run_begin()::text || ':' || public.index_run_begin()::text" "true:false"
+check "and after it ends, the next one is admitted" \
+  "select (select public.index_run_end()) is null, public.index_run_begin()" "t|t"
+q "update platform.embedder set running_since = now() - interval '11 minutes'" >/dev/null
+check "a pass that died holding the lock is overridden after ten minutes" \
+  "select public.index_run_begin()::text" "true"
+q "select public.index_run_end()" >/dev/null
+# Written and read in separate statements: a read in the same SELECT as the write sees the
+# statement's opening snapshot and returns nothing -- the trap that has bitten four tests here.
+DIM="(select atttypmod from pg_attribute where attrelid='platform.embeddings'::regclass and attname='vector')"
+q "select public.embed_save_chunks('note','probe-race','m', jsonb_build_array(to_jsonb(array_fill(0.1::real, array[$DIM]))), '[\"h\"]'::jsonb, 'abc', 2000)" >/dev/null
+q "select public.embed_save_chunks('note','probe-race','m', jsonb_build_array(to_jsonb(array_fill(0.2::real, array[$DIM]))), '[\"h2\"]'::jsonb, 'abc', 2000)" >/dev/null
+check "saving the same object twice is harmless, not a duplicate key" \
+  "select count(*)::text || ':' || max(head) from platform.embeddings where id='probe-race'" "1:h2"
+q "delete from platform.embeddings where id='probe-race'" >/dev/null
 check "a public note is returned by meaning" \
   "select count(*) from jsonb_array_elements(public.skillhub_similar(to_jsonb(array_fill(0::real,array[1536])),'probe',20)) h where h->>'title'='Vector visibility probe'" "1"
 q "select public.skillhub_retire('agent_01','note',(select id::text from public.notes where title='Vector visibility probe'),'pinning that a retired object leaves the meaning index too')" >/dev/null

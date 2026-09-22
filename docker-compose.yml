@@ -107,7 +107,12 @@ services:
       KONG_DNS_ORDER: LAST,A,CNAME
       KONG_DNS_NOT_FOUND_TTL: 1
       KONG_DNS_VALID_TTL: 5
-      KONG_PLUGINS: request-transformer,cors,key-auth,acl,basic-auth,request-termination,ip-restriction,post-function
+      # request-size-limiting and rate-limiting guard /deliver, the key-less route where a file
+      # lands by ticket (DECISIONS 35). Both are bundled with Kong; they only have to be LISTED
+      # here, because this variable is the whole set Kong will load -- a plugin named in
+      # kong.yml and absent here is a crash loop at start, not a warning. Measured 2026-09-22
+      # on dev: `kong config parse` passed and the container restarted every few seconds.
+      KONG_PLUGINS: request-transformer,cors,key-auth,acl,basic-auth,request-termination,ip-restriction,post-function,request-size-limiting,rate-limiting
       KONG_NGINX_PROXY_PROXY_BUFFER_SIZE: 160k
       KONG_NGINX_PROXY_PROXY_BUFFERS: 64 160k
       KONG_PROXY_ACCESS_LOG: /dev/stdout combined

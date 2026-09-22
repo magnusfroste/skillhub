@@ -308,6 +308,59 @@ that forwards to `functions:9000` may carry `cors` alone (the exception is `/del
 where a single-use ticket is the authorisation and the handler only redeems it). Found 2026-09-22:
 the generic `/functions/v1` route bypassed the gateway entirely (DECISIONS 36).
 
+## 10. Only the agents' keys and the administrator's open anything
+
+The claim: an agent key opens `/skillhub` as that agent and nothing else; the service key opens
+everything; no other credential opens anything; no route answers without one. Check it against
+every consumer and every route, not against the ones the design talks about (DECISIONS 37).
+
+With no credential, every path is 401 -- including `/rest/v1/agents`, `/storage/v1/bucket`,
+`/functions/v1/skillhub` and `/`:
+
+    for p in /skillhub /mcp /embed /pg/ /rest/v1/agents /graphql/v1 /auth/v1/settings \
+             /realtime/v1/api /storage/v1/bucket /functions/v1/skillhub /deliver/x /; do
+      printf '%-24s %s\n' $p "$(curl -s -o /dev/null -w '%{http_code}' https://<store>$p)"; done
+
+With the **anon key** (`ANON_KEY` in the environment), every path is 403 -- it authenticates and is
+allowed nowhere. The three that used to answer:
+
+    curl -s -o /dev/null -w '%{http_code}\n' https://<store>/rest/v1/agents -H "apikey: $ANON"
+    curl -s -o /dev/null -w '%{http_code}\n' -X POST https://<store>/rest/v1/rpc/skillhub_whoami \
+      -H "apikey: $ANON" -H 'content-type: application/json' -d '{"agent":"agent_02"}'
+    curl -s -o /dev/null -w '%{http_code}\n' https://<store>/storage/v1/bucket -H "apikey: $ANON"
+
+Behind the gateway the database refuses it on its own. From the host, straight at PostgREST
+(its container address, port 3000), the anon JWT as a bearer must get a permission error and
+not a whoami:
+
+    curl -s -X POST http://<rest-ip>:3000/rpc/skillhub_whoami -H "Authorization: Bearer $ANON" \
+      -H 'content-type: application/json' -d '{"agent":"agent_02"}'
+
+and in SQL `select * from platform.v_open_to_anon` is empty, while `platform.health()` carries a
+check `the third key` in state `ok`. `utils/test-seed-on-empty-db.sh` proves the same on a fresh
+database, including that a table or function created after the seed gets no anon grant.
+
+Each agent key, with a forged `x-consumer-username: service_role` on the call, reports its own
+slot on `/skillhub` (the loop in section 9 with all ten keys) and is 403 on `/mcp`, `/embed`,
+`/pg/`, `/rest/v1/`, `/graphql/v1`, `/auth/v1/`, `/realtime/v1/`, `/storage/v1/`. The service key
+is the only one that is not.
+
+What still works without a key, on purpose: a signed download URL (`skillhub_download_url`, ten
+minutes, the token is in the query), and a `PUT` to `/deliver/<ticket>` (section 8). Nothing
+else.
+
+Last, the credentials themselves. An install that kept `example.env`'s values has Supabase's
+public demo keys and demo JWT secret, which are on the internet. Compare:
+
+    for v in ANON_KEY SERVICE_ROLE_KEY JWT_SECRET DASHBOARD_PASSWORD; do
+      printf '%-20s deployed=%s example=%s\n' $v \
+        "$(grep -E "^$v=" <deployed>/.env | cut -d= -f2- | sha256sum | cut -c1-8)" \
+        "$(grep -E "^$v=" example.env | cut -d= -f2- | sha256sum | cut -c1-8)"; done
+
+No pair may match. If one does, mint new values (`utils/`, or Supabase's generator), put them in
+the environment panel and redeploy -- and treat everything in the store as having been readable
+until that moment.
+
 ## When something fails
 
 - `FAILED` in the seed log → the store is incomplete; fix the file, re-run `utils/seed.sh`.

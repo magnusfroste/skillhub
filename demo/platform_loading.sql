@@ -588,8 +588,8 @@ begin
    where slug = 'load-from-source-system' and version <> '1.1.0' and superseded_by is null;
 end $do$;;
 
-grant select on all tables in schema platform to anon, authenticated, service_role;
-grant execute on all functions in schema platform to anon, authenticated, service_role;
+grant select on all tables in schema platform to service_role;
+grant execute on all functions in schema platform to service_role;
 
 -- ---------------------------------------------------------------------------
 -- 4) The conventions skill points at the house standards, or nobody finds them.

@@ -558,6 +558,28 @@ check "the register says the same in words" \
   "select state from platform.v_uploads where filename='ticket-probe.pdf'" "never came"
 q "delete from public.documents where sha256='tick0000probe'" >/dev/null
 rm -f /tmp/skillhub-ticket-nonce
+# The third key (DECISIONS 37): anon and authenticated are roles behind keys that are not
+# agents. The lock runs last; nothing the store defines may be reachable by them, and nothing
+# created afterwards may get it back through default privileges.
+check "the anon role cannot run a tool" \
+  "select has_function_privilege('anon', p.oid, 'execute') from pg_proc p where p.proname='skillhub_whoami' limit 1" "f"
+check "nor can authenticated" \
+  "select has_function_privilege('authenticated', p.oid, 'execute') from pg_proc p where p.proname='skillhub_whoami' limit 1" "f"
+check "service_role still can" \
+  "select has_function_privilege('service_role', p.oid, 'execute') from pg_proc p where p.proname='skillhub_whoami' limit 1" "t"
+check "anon cannot read a table either" \
+  "select has_table_privilege('anon','public.agents','select')" "f"
+check "nothing of the store is open to anon" \
+  "select count(*) from platform.v_open_to_anon" "0"
+q "select '      still open: ' || kind || ' ' || name from platform.v_open_to_anon" 2>/dev/null
+check "and health says so" \
+  "select c->>'state' from jsonb_array_elements(platform.health()->'checks') c where c->>'check'='the third key'" "ok"
+q "create table public.lock_probe(id int, owner text, visibility text default 'public', created_by text, updated_by text); create function public.lock_probe_fn() returns int language sql as 'select 1'" >/dev/null
+check "a table made after the seed gets no anon grant" \
+  "select has_table_privilege('anon','public.lock_probe','select')" "f"
+check "nor does a function made after the seed" \
+  "select has_function_privilege('anon','public.lock_probe_fn()','execute')" "f"
+q "drop table public.lock_probe; drop function public.lock_probe_fn()" >/dev/null
 check "retiring the note works too" \
   "select (public.skillhub_retire('agent_01','note',(select id::text from public.notes where title='Seed test'),'seed test cleanup') ? 'retired_by')::text" "true"
 

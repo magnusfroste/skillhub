@@ -412,8 +412,8 @@ comment on view platform.v_caveats is 'Read this before trusting the numbers. Wh
 -- ---------------------------------------------------------------------------
 -- 9) Privileges, and attaching the log to tables that already exist.
 -- ---------------------------------------------------------------------------
-grant usage on schema platform to anon, authenticated, service_role;
-alter default privileges in schema platform grant select on tables to anon, authenticated, service_role;
+grant usage on schema platform to service_role;
+alter default privileges in schema platform grant select on tables to service_role;
 
 do $$
 declare t text;
@@ -552,7 +552,7 @@ language sql stable as $$
                     and l.at > now() - interval '15 minutes');
 $$;
 
-grant select on platform.tool_log to anon, authenticated, service_role;
+grant select on platform.tool_log to service_role;
 grant select, delete on platform.tool_log to postgres;
 
 -- A channel for "this is the same shape over and over and there is nowhere to put it".
@@ -653,7 +653,7 @@ begin
 end $$;
 comment on function platform.resolve_structure_request is 'Close a structure request. Say what you did: the agent that asked reads it.';
 
-grant select on platform.structure_requests, platform.v_structure_requests to anon, authenticated, service_role;
+grant select on platform.structure_requests, platform.v_structure_requests to service_role;
 grant execute on function platform.resolve_structure_request(bigint,text,text,text,boolean) to service_role, postgres;
 
 -- ---------------------------------------------------------------------------
@@ -941,7 +941,7 @@ where d.command = 'CREATE TABLE' and d.at > now() - interval '7 days'
 order by d.at desc;
 comment on view platform.v_new_tables is 'Tables added in the last week that still exist. Read it, or the store grows without anyone noticing.';
 
-grant select on all tables in schema platform to anon, authenticated, service_role;
+grant select on all tables in schema platform to service_role;
 
 -- ---------------------------------------------------------------------------
 -- 13) The rule the agents actually look at: into the conventions skill.

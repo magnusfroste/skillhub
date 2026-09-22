@@ -51,6 +51,13 @@ consumers:
 ###
 ### Access Control List
 ###
+### skillhub: the consumer 'anon' keeps its credential (Supabase's own images expect the
+### consumer to exist) but its group is allowed on NO route since 2026-09-22 (DECISIONS 37).
+### The anon key is Supabase's "publishable" key, designed to be embedded in web apps and to
+### rely on row security -- but this store's tools are security-definer functions that take
+### the agent's name as a parameter, trusting the gateway to have filled it in. Through
+### /rest/v1/rpc the caller fills it in. So the anon key was a master key. Nothing in this
+### deployment is a web app; the only callers are agent keys on /skillhub and the service key.
 acls:
   - consumer: anon
     group: anon
@@ -179,7 +186,6 @@ services:
           hide_groups_header: true
           allow:
             - admin
-            - anon
 
   ## OpenAPI root - admin only
   - name: rest-v1-openapi
@@ -235,7 +241,6 @@ services:
           hide_groups_header: true
           allow:
             - admin
-            - anon
 
   ## Secure GraphQL routes
   - name: graphql-v1
@@ -265,7 +270,6 @@ services:
           hide_groups_header: true
           allow:
             - admin
-            - anon
 
   ## Secure Realtime routes
   - name: realtime-v1-ws
@@ -295,7 +299,6 @@ services:
           hide_groups_header: true
           allow:
             - admin
-            - anon
 
   # Block access to /realtime/v1/api/openapi
   - name: realtime-v1-rest-openapi
@@ -356,7 +359,6 @@ services:
           hide_groups_header: true
           allow:
             - admin
-            - anon
 
   ## Storage API endpoint (with Authorization header transformation).
   ## No key-auth - S3 protocol requests don't carry an apikey header.
@@ -367,8 +369,43 @@ services:
   ## the Lua expression evaluates to nil which Kong renders as empty string.
   ## The post-function strips this empty header so Storage's S3 signature
   ## verification falls through to query-parameter parsing.
+  ## skillhub, 2026-09-22 (DECISIONS 37): Storage used to be reachable with any valid JWT and
+  ## no gateway key, because Storage verifies the JWT itself. It now needs the service key like
+  ## every other door -- the only callers are the two functions and Studio, all of which send
+  ## it. The one exception is the route just below: a signed download URL carries its own
+  ## short-lived token and is fetched by an agent with no key at all.
+  - name: storage-v1-signed
+    _comment: 'Storage signed downloads: GET /storage/v1/object/sign/<bucket>/<path>?token=... -- the token is the authorisation'
+    url: http://storage:5000/object/sign/
+    routes:
+      - name: storage-v1-signed
+        strip_path: true
+        methods:
+          - GET
+          - HEAD
+        paths:
+          - /storage/v1/object/sign/
+    plugins:
+      - name: cors
+      - name: request-transformer
+        config:
+          add:
+            headers:
+              - "Authorization: $LUA_AUTH_EXPR"
+          replace:
+            headers:
+              - "Authorization: $LUA_AUTH_EXPR"
+      - name: post-function
+        config:
+          access:
+            - |
+              local auth = kong.request.get_header("authorization")
+              if auth == nil or auth == "" or auth:find("^%s*$") then
+                kong.service.request.clear_header("authorization")
+              end
+
   - name: storage-v1
-    _comment: 'Storage: /storage/v1/* -> http://storage:5000/*'
+    _comment: 'Storage: /storage/v1/* -> http://storage:5000/* (service key only since 2026-09-22)'
     url: http://storage:5000/
     routes:
       - name: storage-v1-all
@@ -377,6 +414,14 @@ services:
           - /storage/v1/
     plugins:
       - name: cors
+      - name: key-auth
+        config:
+          hide_credentials: false
+      - name: acl
+        config:
+          hide_groups_header: true
+          allow:
+            - admin
       - name: request-transformer
         config:
           add:

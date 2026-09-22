@@ -82,6 +82,13 @@ mcp_servers:
 The caretaker is a [hermes-easy](https://github.com/magnusfroste/hermes-easy) with
 `SUPABASE_ADMIN_KEY` set: it gets a second server at `/mcp`. Nobody else does.
 
+There is no third door. Supabase's *anon* key -- the "publishable" one meant for web pages --
+exists in the environment because Supabase's images expect it, but it is allowed on no route and
+the database itself refuses its role on everything the store defines (`demo/platform_lock.sql`,
+DECISIONS 37). Storage answers the service key only; a signed download URL is the one thing an
+agent fetches with no key, and a single-use ticket is the one thing it `PUT`s with none.
+`platform.health()` reports `the third key` as broken the day a grant names that role again.
+
 What an agent key may do is decided by the tools, not by row security (all agent keys share
 one database role): identity from the gateway, no overwriting a colleague, no deleting, no
 creating tables, no raw SQL. The service key may do everything, including read every private

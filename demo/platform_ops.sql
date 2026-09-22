@@ -163,6 +163,22 @@ begin
        else format('Built and re-applied on every boot; last at %s, every file ok.', last_boot::timestamp(0)) end,
     'run', case when last_boot is null or seed_failed is not null then 'docker logs <prefix>-seed   -- then fix the file and restart the seed service' end);
 
+  -- The anon and authenticated roles belong to keys that are not agents. The lock
+  -- (platform_lock.sql) runs last on every boot; if a grant somewhere named them again, the
+  -- store would be a master key to whoever holds the anon key. Broken, not attention.
+  begin
+    select count(*), string_agg(kind || ' ' || name, ', ' order by kind, name) into open_n, quiet_txt
+      from (select * from platform.v_open_to_anon limit 12) o;
+  exception when undefined_table then open_n := -1;
+  end;
+  cks := cks || jsonb_build_object('check','the third key',
+    'state', case when open_n = 0 then 'ok' else 'broken' end,
+    'detail', case
+      when open_n = -1 then 'platform.v_open_to_anon is missing: the lock file (platform_lock.sql) did not run. The anon key may reach the store.'
+      when open_n = 0 then 'Nothing the store defines is reachable by the anon or authenticated role. The only keys are the agents'' and the administrator''s.'
+      else format('%s object(s) reachable by anon or authenticated -- a grant named them again: %s', open_n, quiet_txt) end,
+    'run', case when open_n <> 0 then 'restart the seed service (it runs platform_lock.sql last), then: select * from platform.v_open_to_anon;' end);
+
   -- Search by meaning fails quietly by design: keyword search keeps working, so nothing
   -- upstream ever notices. This is where it stops being quiet.
   select * into e from platform.embedder where id = 1;
@@ -452,7 +468,7 @@ do $$ begin perform cron.unschedule('index_runs_prune'); exception when others t
 select cron.schedule('index_runs_prune', '23 3 * * *',
   $job$ delete from platform.index_runs where at < now() - interval '7 days'; $job$);
 
-grant select on all tables in schema platform to anon, authenticated, service_role;
+grant select on all tables in schema platform to service_role;
 
 -- ---------------------------------------------------------------------------
 -- 4) The house standard for running the store, where the caretaker will find it: in the

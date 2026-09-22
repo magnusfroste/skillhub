@@ -152,8 +152,8 @@ language sql stable security definer set search_path = public, platform as $$
 $$;
 comment on function public.asks_for(text) is 'The noticeboard as one agent sees it: addressed to them, open to anyone, and their own questions with the answers. Inside skillhub_overview, not a tool of its own.';
 
-grant select on all tables in schema platform to anon, authenticated, service_role;
-grant execute on all functions in schema platform to anon, authenticated, service_role;
+grant select on all tables in schema platform to service_role;
+grant execute on all functions in schema platform to service_role;
 
 -- ---------------------------------------------------------------------------
 -- Into the conventions skill, or no agent knows the board exists. Its own section, replaced

@@ -548,7 +548,7 @@ where j.jobname = 'embed'
 order by r.start_time desc nulls last;
 comment on view platform.v_embed_queue is 'The last runs of the embedding job. Empty means it has not run yet.';
 
-grant select on all tables in schema platform to anon, authenticated, service_role;
+grant select on all tables in schema platform to service_role;
 
 -- ---------------------------------------------------------------------------
 -- Index on write, not on a schedule.

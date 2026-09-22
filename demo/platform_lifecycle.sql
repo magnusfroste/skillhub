@@ -365,8 +365,8 @@ begin
 end $$;
 comment on function platform.daily_report(int) is 'A readable summary of what happened. Run select platform.daily_report(7) for a week.';
 
-grant select on all tables in schema platform to anon, authenticated, service_role;
-grant execute on all functions in schema platform to anon, authenticated, service_role;
+grant select on all tables in schema platform to service_role;
+grant execute on all functions in schema platform to service_role;
 
 -- ---------------------------------------------------------------------------
 -- 5) Into the conventions skill, or no agent knows any of this exists.

@@ -1168,6 +1168,71 @@ identity is a route that lets the caller stamp their own.
 
 ---
 
+## 37. The third key
+
+The question that found this was the plain one: *only the ten agent keys and the service key
+open the store -- nothing else gets through?* The honest answer was no. There was a third key,
+and it was the strongest of the lot.
+
+Supabase ships two API keys. The service key is the administrator. The **anon key** is the
+"publishable" one: designed to be embedded in a web page, handed to every browser, and made
+safe by row security -- every table decides per row what the anon role may see. That is a fine
+model for a web app. This store is not a web app, and it does not use that model. Its tools are
+security-definer functions that take the agent's name as a parameter and trust the gateway to
+have filled it in from the key. That trust is sound on `/skillhub`, where the functions container
+is the only caller and it copies the gateway's stamp. It is not sound on `/rest/v1/rpc/`, where
+PostgREST exposes every function in `public` and the caller fills in the parameters. The anon key
+was allowed on `/rest/v1/`. So `skillhub_whoami` with `{"agent":"agent_02"}` and the anon key
+answered as agent_02 -- and so would every other tool, writes included. The tables were open
+too: the Odoo mirror has no row security (it never needed any -- no agent role reads it
+directly), and the anon role had SELECT on it, so the contacts came back to a plain GET.
+Storage answered any valid JWT with no gateway key at all, because Storage verifies the JWT
+itself; row security kept the bucket closed there, which is the only reason that door held.
+
+None of this needed a bug. It is what Supabase does by default, and the store was built on
+top of it without ever asking what the second key was for. The demo instance and the
+customer's ran the same way. `example.env` still ships Supabase's demo anon key -- the one in
+the public docker guide -- so an install that kept the defaults had a master key that is on
+the internet.
+
+**Two layers, so the next route mistake is a 4xx and not a master key.**
+
+At the gateway (`kong.yml`): the anon consumer keeps its credential, because Supabase's own
+pieces expect the consumer to exist, but its group is allowed on no route. `/rest/v1/`,
+`/graphql/v1`, `/realtime/v1/` and `/auth/v1/` are the administrator's. Storage now needs the
+service key like every other door; the one exception is a signed download URL, whose token is
+its own authorisation and which an agent fetches with no key. (Storage's S3 protocol, which
+signs with its own keys, is therefore closed from outside; nothing here uses it.)
+
+In the database (`platform_lock.sql`, last in the seed): every routine the store defines in
+`public` and `platform` loses execute from PUBLIC, anon and authenticated and keeps it for
+service_role; every table and sequence loses anon and authenticated; and the default privileges
+for the creating roles are altered so nothing created later gets them back. Extension functions
+are left alone -- they are arithmetic, owned by supabase_admin, and revoking PUBLIC from them
+would only cost postgres its own access. The row-security policies in `skill_library` that
+name anon become inert and stay, because a policy without a grant grants nothing. A view,
+`platform.v_open_to_anon`, lists whatever those roles can still reach; it must be empty, and
+`platform.health()` says *broken* if it is not. The seed's fourteen `grant ... to anon,
+authenticated, service_role` lines now say `service_role`, so a boot does not grant in one
+file what it revokes in the last.
+
+What this changes for the people: nothing. Agents use agent keys on `/skillhub`; the caretaker
+uses the service key; Studio uses the service key; the two functions use the service key. The
+anon key is now a credential that opens nothing, and can stay in the environment because
+Supabase's images want it there.
+
+What it does not change: the handful of `/auth/v1/` endpoints Supabase leaves keyless
+(`verify`, `callback`, `authorize`, `jwks`, SAML) -- redirect targets for e-mail links and OAuth
+flows, with no users to serve; `DISABLE_SIGNUP` is now `true` in `example.env` so the signup
+that the anon key used to reach cannot be reached with the service key by mistake either.
+
+And a rule, since this is the second gateway-class hole in a day: **every credential the
+environment holds is a door, whether or not the design mentions it.** The audit is not "do our
+keys work"; it is "list every consumer and every route, and say for each pair what it opens."
+VERIFY 10 is that list.
+
+---
+
 ## What this does not do yet
 
 Named, measured where possible, and deliberately not built:

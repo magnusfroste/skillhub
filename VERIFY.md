@@ -293,6 +293,21 @@ source on the next pass. What it needed from us was nothing; what it got wrong w
 and §32 says what changed because of it. The tell that the standard is being followed is the
 absence of a run journal in `notes`.
 
+## 9. The gateway has no side door
+
+Every path that reaches the functions container must authenticate. From outside, with no key:
+
+    curl -X POST https://<store>/functions/v1/skillhub -H 'x-consumer-username: agent_02' \
+      -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"skillhub_whoami","arguments":{}}}'
+
+must answer 401, not a whoami. So must `/functions/v1/embed`. On `/skillhub` a valid key with a
+forged `x-consumer-username` header must report the key's own agent, not the forged one -- key-auth
+overrides the claim. `/skillhub` with no key is 401; `/embed` is admin-only. The private
+`deliveries` bucket refuses an unauthenticated list or download. Audit the routes directly: nothing
+that forwards to `functions:9000` may carry `cors` alone (the exception is `/deliver`, PUT-only,
+where a single-use ticket is the authorisation and the handler only redeems it). Found 2026-09-22:
+the generic `/functions/v1` route bypassed the gateway entirely (DECISIONS 36).
+
 ## When something fails
 
 - `FAILED` in the seed log → the store is incomplete; fix the file, re-run `utils/seed.sh`.

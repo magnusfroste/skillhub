@@ -1137,6 +1137,35 @@ and `platform.health()` names them.
 agent has to copy one. The route is the mirror of this one -- `GET /deliver/<ticket>` -- and is
 the next step if it is ever measured to fail.
 
+
+---
+
+## 36. The gateway had a side door
+
+**Found and closed 2026-09-22, while hardening for the client.** Every agent reaches the store
+through Kong on `/skillhub`, which checks the API key and stamps the verified `X-Consumer-Username`
+the function writes as. That door is sound: tested with a valid agent_01 key and a forged
+`X-Consumer-Username: agent_02` header, the function still writes as agent_01 -- key-auth overrides
+what the caller claims.
+
+But the standard Supabase config ships a second, generic route: `/functions/v1/*` to the functions
+container, with `cors` and nothing else. It reached the *same* function -- `/functions/v1/skillhub`
+-- with no key-auth, so key-auth never ran, so a client-supplied `X-Consumer-Username` passed
+straight through. From the internet, with no key at all, one could name any agent and be it: read
+its private notes, write in its name, trigger the indexer. The edge runtime's own `VERIFY_JWT` is
+off (the internal cron and the ticket PUTs depend on that), so nothing behind Kong caught it either.
+
+The fix is one deletion. The two functions this deployment runs each already have a guarded route
+of their own -- `/skillhub` (key-auth + acl), `/embed` (admin only), `/deliver` (single-use ticket,
+PUT only) -- so the generic route added nothing but the hole. It is gone, and a future function
+gets its own authenticated route, the way these three do, never a shared catch-all. The private
+`deliveries` bucket was checked in the same pass: not public, and unauthenticated list and download
+are both refused.
+
+The lesson is the one the whole store is built on, turned on its own gateway: identity is only
+worth what the thing that stamps it is worth. A route that reaches the function without stamping
+identity is a route that lets the caller stamp their own.
+
 ---
 
 ## What this does not do yet

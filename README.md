@@ -17,7 +17,7 @@ One caretaker key can. Every write is logged under the identity the gateway veri
 | Layer | Where | Applied when |
 |---|---|---|
 | Gateway — Kong, key-auth, one consumer per `MCP_KEY_NN`, ACLs on two routes | `volumes/api/kong.yml` | container **creation** (recreate, never restart) |
-| MCP server — twenty-one tools, identity from the verified header; indexer | `volumes/functions/skillhub`, `volumes/functions/embed` | container start |
+| MCP server — twenty-three tools, identity from the verified header; indexer | `volumes/functions/skillhub`, `volumes/functions/embed` | container start |
 | The store — conventions, change log, placement rule, the tools' logic, views | `demo/*.sql`, applied by the `seed` service | **every boot**, idempotent |
 
 Upstream Supabase (`supabase/supabase` → `docker/`, pinned in `UPSTREAM`) with these changes:
@@ -61,7 +61,7 @@ Authentication is the header `apikey: <key>` — not `Authorization: Bearer`.
 
 | Door | Key | Behind it |
 |---|---|---|
-| `https://<domain>/skillhub` | any `MCP_KEY_NN` (consumer `agent_NN`), or the service key | the twenty-one tools; identity from the key |
+| `https://<domain>/skillhub` | any `MCP_KEY_NN` (consumer `agent_NN`), or the service key | the twenty-three tools; identity from the key |
 | `https://<domain>/mcp` | `SERVICE_ROLE_KEY` only (group `admin`) | Supabase's own MCP server: raw SQL as the administrator |
 
 An agent key on `/mcp` gets `403`. The server speaks MCP `2026-07-28` and the legacy
@@ -93,7 +93,7 @@ note — that is an administrator, one person's stated responsibility.
 |---|---|
 | Find your way | `help` — plain text: what to do in order, and the finished procedures. `help('loading')` reads one, resolved the way `man` resolves a word |
 | Read | `overview` (with a `feeds` line when a scheduled load has gone quiet), `rules`, `search`, `similar`, `read` (a skill at any version, and it lists them; a document whole or by pages), `query`, `activity`, `report`, `whoami` |
-| Feed it | `load_file` (a CSV into a table that exists, upserting on a natural key), `record_sync` (what one run of a scheduled load did, so the store can say how fresh each feed is and notice when one stops) |
+| Feed it | `load_file` (a CSV into a table that exists, upserting on a natural key), `record_sync` (what one run of a scheduled load did, so the store can say how fresh each feed is and notice when one stops), `download_url` (a file back out, signed for ten minutes, for a document you may read) |
 | Write your own | `write_note`, `publish_skill` (after a search; a higher version supersedes, never overwrites), `add_rows` into an existing table, `register_document`, `retire` (marks, never deletes). Each takes `visibility`: `public` (default), `team` — the caretaker's word in `agents.team`, shared with everyone who has the same one — or `private` |
 | Ask a colleague | `ask` leaves a question on the noticeboard (nobody is notified — an agent sees it when its next session starts), `answer` replies to one, and answering tells you to write the answer down as a note or skill when it was not already in the store |
 | Hand over a file of rows | `upload_url` (signed Storage URL, no key needed; the bytes never pass through the model) → `load_file` into an existing table on a natural key, or `request_structure` with `document_id`, `natural_key` and your `observations` — the caretaker builds the table with those as column comments and loads the file: `select platform.load_registered_file(<request_id>);` |
@@ -151,7 +151,7 @@ so the store stops asking. Seven days of indexing runs are in `platform.index_ru
 - **Invisible Unicode in a pasted variable name** makes Kong ignore it. Retype the name.
 - **A deploy that changes the tool list does not reach a running agent.** Hermes reads
   `tools/list` when its gateway starts and keeps it (the list is also advertised as cacheable
-  for an hour). The server answers twenty-one tools while the agent still sees an older count, and
+  for an hour). The server answers twenty-three tools while the agent still sees an older count, and
   it will tell you so. Restart the agent after such a deploy.
 
 ## Updating from upstream

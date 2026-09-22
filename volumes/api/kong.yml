@@ -395,17 +395,14 @@ services:
               end
 
   ## Edge Functions routes
-  - name: functions-v1
-    _comment: 'Edge Functions: /functions/v1/* -> http://functions:9000/*'
-    url: http://functions:9000/
-    read_timeout: 150000
-    routes:
-      - name: functions-v1-all
-        strip_path: true
-        paths:
-          - /functions/v1/
-    plugins:
-      - name: cors
+  ## Edge Functions generic route REMOVED 2026-09-22 (DECISIONS 36). It forwarded
+  ## /functions/v1/* to the functions container with cors ONLY -- no key-auth -- so
+  ## /functions/v1/skillhub reached the house MCP server unauthenticated, and because
+  ## key-auth never ran there a client-supplied X-Consumer-Username passed straight through:
+  ## anyone on the internet could act as any agent and read any private note. The two
+  ## functions this deployment runs each have their own authenticated route (/skillhub with
+  ## key-auth+acl, /embed admin-only, /deliver by single-use ticket); the generic route added
+  ## nothing but that hole. A future function gets its own route, like those, never this.
 
   ## OAuth 2.0 Authorization Server Metadata (RFC 8414)
   - name: well-known-oauth

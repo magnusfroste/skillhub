@@ -346,8 +346,9 @@ slot on `/skillhub` (the loop in section 9 with all ten keys) and is 403 on `/mc
 is the only one that is not.
 
 What still works without a key, on purpose: a signed download URL (`skillhub_download_url`, ten
-minutes, the token is in the query), and a `PUT` to `/deliver/<ticket>` (section 8). Nothing
-else.
+minutes, the token is in the query -- strip the token and Storage answers 400; minting one needs
+the service key, 401 without and 403 for an agent), and a `PUT` to `/deliver/<ticket>` (section
+8). Nothing else.
 
 Last, the credentials themselves. An install that kept `example.env`'s values has Supabase's
 public demo keys and demo JWT secret, which are on the internet. Compare:

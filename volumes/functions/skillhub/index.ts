@@ -518,8 +518,13 @@ function parseCsv(text: string): Record<string, string>[] {
   const header = rows[0].map((h) => h.trim().toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^_+|_+$/g, ""));
   return rows.slice(1).map((r) => Object.fromEntries(header.map((h, i) => [h, (r[i] ?? "").trim()])));
 }
-async function documentPath(id: string): Promise<{ path: string; filename: string; sha256: string }> {
-  const d = await callRpc("skillhub_read", { kind: "document", id }) as any;
+// Looked up AS THE AGENT: a document's visibility decides who may read it, and the read
+// predicate needs to know who is asking. Without the agent, every team or private document
+// came back as "no document with that id" and the message below blamed the upload path --
+// found on 2026-09-22 when four team-visible files could not be loaded by their own owner.
+async function documentPath(id: string, agent: string): Promise<{ path: string; filename: string; sha256: string }> {
+  const d = await callRpc("skillhub_read", { kind: "document", id, agent }) as any;
+  if (d?.error) throw new Error(`${d.error} -- either the id is wrong, or the document is private to somebody else or to another team. skillhub_search shows what you can see.`);
   const path = d?.path ?? d?.document?.path; const filename = d?.filename ?? d?.document?.filename; const sha256 = d?.sha256 ?? d?.document?.sha256;
   if (!path) throw new Error(`Document ${id} has no upload path. Register it with skillhub_upload_url (not register_document) so the bytes have somewhere to go.`);
   return { path, filename, sha256 };
@@ -614,7 +619,7 @@ async function handle(body: any, agent: string): Promise<unknown | null> {
         if (seen.owner !== agent && agent !== "service_role") {
           throw new Error(`${docId} belongs to ${seen.owner}. Only its owner or the caretaker may load its text -- the same rule skillhub_load_text applies.`);
         }
-        const { path, filename } = await documentPath(docId);
+        const { path, filename } = await documentPath(docId, agent);
         if (/\.(txt|md|csv|json)$/i.test(filename)) {
           throw new Error(`${filename} is a text file already: run skillhub_load_text(document_id) directly.`);
         }
@@ -692,7 +697,7 @@ async function handle(body: any, agent: string): Promise<unknown | null> {
         }, null, 2) }] });
       }
       if (tool.rpc === "__load_file__") {
-        const { path, filename, sha256 } = await documentPath(String(args.document_id ?? ""));
+        const { path, filename, sha256 } = await documentPath(String(args.document_id ?? ""), agent);
         const rows = parseCsv(await downloadObject(path));
         let inserted = 0, updated = 0, slices = 0;
         for (let i = 0; i < rows.length; i += 500) {
@@ -714,7 +719,7 @@ async function handle(body: any, agent: string): Promise<unknown | null> {
         // caller may not read answers with an error there, and that is the answer here too.
         const seen = await callRpc("skillhub_read", { kind: "document", id: String(args.document_id ?? ""), agent }) as any;
         if (seen?.error) throw new Error(seen.error);
-        const { path, filename } = await documentPath(String(args.document_id ?? ""));
+        const { path, filename } = await documentPath(String(args.document_id ?? ""), agent);
         const isText = /\.(txt|md|csv|json)$/i.test(filename);
         const fileUrl = await signedDownloadUrl(path);
         const textUrl = !isText && await objectExists(`${path}.txt`) ? await signedDownloadUrl(`${path}.txt`) : null;
@@ -726,7 +731,7 @@ async function handle(body: any, agent: string): Promise<unknown | null> {
         }, null, 2) }] });
       }
       if (tool.rpc === "__load_text__") {
-        const { path, filename } = await documentPath(String(args.document_id ?? ""));
+        const { path, filename } = await documentPath(String(args.document_id ?? ""), agent);
         const isText = /\.(txt|md|csv|json)$/i.test(filename);
         let raw: string;
         try { raw = await downloadObject(isText ? path : `${path}.txt`); }

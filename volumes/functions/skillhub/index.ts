@@ -624,8 +624,9 @@ async function handle(body: any, agent: string): Promise<unknown | null> {
           document_id: docId, filename, new_document: false,
           // x-upsert, because a sidecar that exists already is the common case here: a wrong
           // or partial text is being replaced, and a 409 would send the agent back to square one.
-          upload_text_with: `${line} && curl -sS -X PUT -H 'content-type: text/plain' -H 'x-upsert: true' --upload-file '${filename}.txt' '${textUrl}'`,
-          then: "Run that from your shell (skillhub_download_url gives you the file if it is not on this machine), then skillhub_load_text(document_id). No new document is created: the text lands beside the file it belongs to.",
+          make_text_with: line,
+          upload_text_with: `curl -sS -X PUT -H 'content-type: text/plain' -H 'x-upsert: true' --upload-file '${filename}.txt' '${textUrl}'`,
+          then: "From your shell: make_text_with, then upload_text_with COPIED EXACTLY -- the token in the URL fails with InvalidJWT if re-typed (skillhub_download_url gives you the file if it is not on this machine). Then skillhub_load_text(document_id). No new document is created: the text lands beside the file it belongs to.",
         }, null, 2) }] });
       }
       if (tool.rpc === "__upload_url__") {
@@ -666,17 +667,25 @@ async function handle(body: any, agent: string): Promise<unknown | null> {
           // beside it, which cannot read a .pptx, so the file sat catalogued and unsearchable
           // until the caretaker went looking for the text itself. Office files are zip archives
           // of XML, read with python3's zipfile -- see PPTX_TEXT_LINE for why not unzip.
-          ...(textUrl ? { upload_text_with: (
-            /\.pptx$/i.test(filename) ? PPTX_TEXT_LINE
-            : /\.docx$/i.test(filename) ? DOCX_TEXT_LINE
-            : /\.xlsx$/i.test(filename) ? `# a spreadsheet is ROWS, not text -- this makes '<the file>.csv' from its first sheet with nothing installed; then skillhub_upload_url THAT file and skillhub_load_file it (or skillhub_request_structure). Only if it must be a document, make '<the file>.txt' instead and continue: ` + XLSX_CSV_LINE + ` #`
-            : `pdftotext -layout '<the file>' '<the file>.txt'`
-          ) + ` && curl -sS -X PUT -H 'content-type: text/plain' --upload-file '<the file>.txt' '${textUrl}'` } : {}),
+          // The line that MAKES the text and the line that UPLOADS it are two fields, never one
+          // string. Measured 2026-09-22 on dev: with the extraction command and the curl joined
+          // by &&, the signed URL's token sat at the end of a 600-character line and the model
+          // re-typed it from memory -- every failed upload carried a token whose payload said
+          // upsert:'false' (a string), 'upload', or nothing, where the server had signed
+          // upsert:false. Signature verification failed, InvalidJWT, four times in a row. The five
+          // uploads that succeeded were the ones whose curl line was short and stood alone.
+          ...(textUrl ? (
+            /\.xlsx$/i.test(filename)
+              ? { make_csv_with: XLSX_CSV_LINE,
+                  upload_text_with: `curl -sS -X PUT -H 'content-type: text/plain' --upload-file '<the file>.txt' '${textUrl}'` }
+              : { make_text_with: /\.pptx$/i.test(filename) ? PPTX_TEXT_LINE : /\.docx$/i.test(filename) ? DOCX_TEXT_LINE : `pdftotext -layout '<the file>' '<the file>.txt'`,
+                  upload_text_with: `curl -sS -X PUT -H 'content-type: text/plain' --upload-file '<the file>.txt' '${textUrl}'` }
+          ) : {}),
           then: isText
             ? "Run that from your shell; no API key is needed, the URL carries its own. Then: rows -> skillhub_load_file(document_id, target_table, natural_key) or skillhub_request_structure; a text document -> skillhub_load_text(document_id) so it is searchable and quotable."
             : /\.xlsx$/i.test(filename)
-              ? "Run the first line to upload the workbook as delivered. A spreadsheet is ROWS: run the python line in upload_text_with to get a CSV, then skillhub_upload_url for the CSV (its own sha256) and skillhub_load_file into the table that holds this data, or skillhub_request_structure with that document_id, natural_key and what you noticed. Do not hand-parse the sheet and do not look for openpyxl or LibreOffice -- the line needs neither."
-              : "Run both lines from your shell; no API key is needed, the URLs carry their own. Then skillhub_load_text(document_id): the store reads the text server-side, keeps the page numbers, and it becomes searchable by words and by meaning within seconds. Skip the second line only for a file nobody will ask the contents of.",
+              ? "Run upload_with to store the workbook as delivered -- COPY THE LINE EXACTLY, the token in it fails with InvalidJWT if re-typed. A spreadsheet is ROWS: run make_csv_with to get a CSV, then skillhub_upload_url for the CSV (its own sha256) and skillhub_load_file into the table that holds this data, or skillhub_request_structure with that document_id, natural_key and what you noticed. Do not hand-parse the sheet and do not look for openpyxl or LibreOffice -- the line needs neither. upload_text_with is only for the rare workbook that is a document rather than data."
+              : "From your shell: upload_with, then make_text_with, then upload_text_with. COPY EACH LINE EXACTLY -- the URL carries a signed token, and a token re-typed from memory fails with InvalidJWT. No API key is needed. Then skillhub_load_text(document_id): the store reads the text server-side, keeps the page numbers, and it becomes searchable by words and by meaning within seconds. Skip the text only for a file nobody will ask the contents of.",
           note: "The URLs are single-use and expire. The file goes straight to the store; nothing in it passes through you.",
         }, null, 2) }] });
       }

@@ -404,6 +404,17 @@ check "and carries the two rules a hand-configured agent has no other way of lea
 # hash and nothing read inside it.
 q "select public.skillhub_register_document('agent_01','QM-probe.pdf',12345,'application/pdf','0000probe','A probe manual written by the empty-database test','test', '0000probe/QM-probe.pdf')" >/dev/null
 q "select public.document_set_content((select id from public.documents where sha256='0000probe'), E'QUALITY MANUAL\n\n4.1 Scope\nThis manual applies to every delivery.\n\n## Page 2\n7.3 Supplier surveillance\nEvery approved supplier is audited within twelve months of the last audit; the surveillance register holds the dates.\n\n## Page 3\n9.1 Records\nRecords are kept for ten years.', 3, 'agent_01')" >/dev/null
+# A retry is not a second document (2026-09-22): three rows for one spreadsheet after three
+# failed uploads, each upload_url call having minted a fresh row.
+check "registering the same file again is the same record, not a new one" \
+  "select (public.skillhub_register_document('agent_01','QM-probe.pdf',12345,'application/pdf','0000probe','registered again by mistake','test', '0000probe/QM-probe.pdf')->>'already_registered') || ':' || (select count(*) from public.documents where sha256='0000probe' and owner='agent_01' and retired_at is null)::text" "true:1"
+check "but the same bytes under another name by another agent is a new row that names its twin" \
+  "select (public.skillhub_register_document('agent_02','copy-of-QM.pdf',12345,'application/pdf','0000probe','a copy','test') ? 'duplicate_of')::text" "true"
+check "and it is a second row" \
+  "select count(*)::text from public.documents where sha256='0000probe'" "2"
+# Removed outright, not retired: the checks below select the probe document by its sha and a
+# retired twin would make that subquery return two rows.
+q "delete from public.documents where filename = 'copy-of-QM.pdf'" >/dev/null
 check "the text is stored with its page count" \
   "select pages::text || ':' || (content like '%## Page 3%')::text || ':' || (content_loaded_at is not null)::text from public.documents where sha256='0000probe'" "3:true:true"
 check "the owner alone may load it" \

@@ -454,8 +454,24 @@ create or replace function public.skillhub_register_document(
   sha256 text default null, description text default null, source text default null,
   path text default null, visibility text default 'public') returns jsonb
 language plpgsql security definer set search_path = public, platform as $$
-declare new_id uuid; duplicate text; step text;
+declare existing_id uuid; new_id uuid; duplicate text; step text;
 begin
+  -- The same agent registering the same bytes under the same name again is a RETRY, not a
+  -- second document (2026-09-22: three rows for one spreadsheet after three failed uploads,
+  -- each upload_url call having minted a fresh row). A different agent, or a different name
+  -- for the same bytes, is still a new row with duplicate_of set -- that is a real signal.
+  if sha256 is not null then
+    select d.id into existing_id from public.documents d
+     where d.owner = agent and d.sha256 = skillhub_register_document.sha256
+       and d.filename = skillhub_register_document.filename and d.retired_at is null
+     order by d.created_at desc limit 1;
+    if existing_id is not null then
+      return jsonb_build_object('id', existing_id, 'filename', filename, 'owner', agent,
+        'already_registered', true,
+        'note', 'You registered this exact file before; this is that record, not a new one. Upload to it and load its text as usual.');
+    end if;
+  end if;
+
   if agent is null or agent = '' then raise exception 'No agent identity from the gateway.'; end if;
   -- Every reference to a parameter that shares a column name is qualified with the function
   -- name. This is the fourth place today where an unqualified one made a tool fail on every

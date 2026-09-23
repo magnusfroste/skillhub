@@ -693,7 +693,7 @@ async function handle(body: any, agent: string): Promise<unknown | null> {
             : /\.xlsx$/i.test(filename)
               ? "Run upload_with to store the workbook as delivered. A spreadsheet is ROWS: run make_csv_with to get a CSV, then skillhub_upload_url for the CSV (its own sha256) and skillhub_load_file into the table that holds this data, or skillhub_request_structure with that document_id, natural_key and what you noticed. Do not hand-parse the sheet and do not look for openpyxl or LibreOffice -- the line needs neither. upload_text_with is only for the rare workbook that is a document rather than data."
               : "From your shell, one at a time: upload_with, then make_text_with, then upload_text_with. No API key is needed; the ticket in each URL is the permission. Then skillhub_load_text(document_id): the store reads the text server-side, keeps the page numbers, and it becomes searchable by words and by meaning within seconds. Skip the text only for a file nobody will ask the contents of.",
-          note: "Each ticket works once and for ten minutes, for that one file. The file goes straight to the store; nothing in it passes through you. A reply of {stored: ...} means it arrived.",
+          note: "Each ticket works once and for ten minutes, for that one file. The file goes straight to the store; nothing in it passes through you. A reply of {stored: ...} means it arrived. RUN THE LINES EXACTLY AS GIVEN -- copy them, do not retype the address: a host name typed from memory has failed with 'could not resolve host' twice, and the answer to that is the line above, not a DNS investigation.",
         }, null, 2) }] });
       }
       if (tool.rpc === "__load_file__") {

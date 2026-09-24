@@ -84,7 +84,7 @@ let runTokens = 0;
 // not indexed, because nothing says so. It was not observable either: usage.prompt_tokens
 // is the sum over the whole request, so a batch of eight hides which input was cut, and an
 // estimate from the assumed ratio can never fire because the chunk size is derived from
-// that same ratio. Measured 2026-09-16 against a client vLLM: eight chunks of 6,773
+// that same ratio. Measured 2026-09-16 against a private vLLM: eight chunks of 6,773
 // characters of part numbers and hex came back at exactly 8 x 2,048 tokens -- every one
 // cut -- and the counter said zero.
 //

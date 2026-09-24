@@ -491,7 +491,7 @@ comment on `status`, which is the test in VERIFY §6 with this data.
 
 ## 21. The index configures itself and embeds in chunks
 
-The client's embedder is a vLLM at `--max-model-len 2048`, tuned for a RAG tool that feeds
+A private embedder is often a vLLM at `--max-model-len 2048`, tuned for a RAG tool that feeds
 it 512-token pieces. The store fed it whole objects: one vector per skill, note or
 document. A 14,000-character skill was refused outright — not truncated, refused, and its
 seven slice-mates with it, every five minutes. The workaround was a character cap, set by
@@ -517,7 +517,7 @@ names the section. Measured on dev with a 3,000-character budget: two skills bec
 chunks, and *"what to do with a csv export when the table already exists"* found the loading
 skill at its first section. A RAG embedder at 512 tokens is now enough.
 
-**Measured against the client's own embedder, 2026-09-16** (Qwen3-Embedding-8B FP8 on vLLM,
+**Measured against a private embedder, 2026-09-16** (Qwen3-Embedding-8B FP8 on vLLM,
 `--max-model-len 2048`, `--max-num-seqs 8`): the indexer read `max_model_len` off
 `/v1/models`, measured 3.89 characters per token on a Swedish-and-English sample, chose
 6,773 characters per chunk, found the model returns **4,096** dimensions and rebuilt the
@@ -530,7 +530,7 @@ measures on, so the headroom holds. Swedish questions against English content on
 model: *"vad gör jag med en csv-export när tabellen redan finns"* → the loading skill at
 0.71; *"hur många ärenden är stängda"* → the comment on `support_tickets.status` that says
 the column carries three spellings of closed. That is the whole retrieval layer, on hardware
-the client owns, with nothing leaving the building.
+the owner controls, with nothing leaving the building.
 
 The chunker found something else on its first run: the conventions skill on dev was 201,433
 characters, holding "## Overview" sixteen times. Three seed statements strip their own
@@ -620,7 +620,7 @@ forbids — it is a ready answer for the thing that was about to be invented.
 Chunking made one object several vectors, so similarity search grouped them: one hit per
 object, at its best chunk. The grouping and the visibility check went inside the ordered
 scan — `distinct on (source, id) order by source, id, distance` — and that is a query no
-vector index can serve. Measured on a scratch store at 4,096 dimensions, the client's case,
+vector index can serve. Measured on a scratch store at 4,096 dimensions, the private-embedder case,
 on a host deliberately starved to 1.5 GB:
 
 | chunks | the search agents ran | the bare nearest-neighbour scan |
@@ -960,10 +960,10 @@ solves something, and the solution becomes what the next one starts from.
 
 ---
 
-## 33. What the first agent on a client install did with the rules
+## 33. What the first agent on a fresh install did with the rules
 
-**2026-09-21.** A new SkillHub and a new Hermes on a client's own Easypanel. The first agent,
-not the caretaker, was told in Swedish: research Monitor ERP, we intend to integrate with it
+**2026-09-21.** A new SkillHub and a new Hermes on a fresh Easypanel. The first agent,
+not the caretaker, was told in Swedish: research an ERP system we intend to integrate with
 later, find out everything we need to understand. Nobody told it about the store. Its reasoning
 is the only unprompted evidence we have of how the conventions read from the outside.
 
@@ -1048,9 +1048,9 @@ differ. Two copies of an onboarding block would otherwise become two rulebooks.
 
 ---
 
-## 34. Three callers, no lock: what the client's caretaker found
+## 34. Three callers, no lock: what a caretaker found
 
-**2026-09-22.** On the client's instance the caretaker reported six failed indexing runs, all on
+**2026-09-22.** On one install the caretaker reported six failed indexing runs, all on
 the same slide deck, each with a duplicate-key error -- and, having read `caretaker-operations`,
 correctly deleted the stranded chunk (the one delete the standard permits) and set out to extract
 the deck's text itself. What it had found was ours.
@@ -1142,7 +1142,7 @@ the next step if it is ever measured to fail.
 
 ## 36. The gateway had a side door
 
-**Found and closed 2026-09-22, while hardening for the client.** Every agent reaches the store
+**Found and closed 2026-09-22.** Every agent reaches the store
 through Kong on `/skillhub`, which checks the API key and stamps the verified `X-Consumer-Username`
 the function writes as. That door is sound: tested with a valid agent_01 key and a forged
 `X-Consumer-Username: agent_02` header, the function still writes as agent_01 -- key-auth overrides
@@ -1190,8 +1190,8 @@ Storage answered any valid JWT with no gateway key at all, because Storage verif
 itself; row security kept the bucket closed there, which is the only reason that door held.
 
 None of this needed a bug. It is what Supabase does by default, and the store was built on
-top of it without ever asking what the second key was for. The demo instance and the
-customer's ran the same way. `example.env` still ships Supabase's demo anon key -- the one in
+top of it without ever asking what the second key was for. Every install ran the same
+way. `example.env` still ships Supabase's demo anon key -- the one in
 the public docker guide -- so an install that kept the defaults had a master key that is on
 the internet.
 

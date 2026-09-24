@@ -134,7 +134,7 @@ check "the pointer names the range of headings a chunk covers" \
 check "a chunk cut from the middle of a long section carries its heading forward" \
   "select head from platform.chunk_text('T', '## Page 4'||E'\n'||repeat('word ',900)||E'\n\n'||repeat('more ',900), 2500) where chunk = 1" "## Page 4 (continued)"
 # A note whose line breaks were lost in transit is not one enormous heading (2026-09-21).
-# Measured on a client install: an agent flattened a 5 KB markdown note to a single line to get
+# Measured on one install: an agent flattened a 5 KB markdown note to a single line to get
 # it past its own client's JSON building, and every chunk of it then carried the same 120
 # characters of prose as its pointer.
 check "the conventions say long text is handed over as a file, not squeezed through an argument" \
@@ -162,7 +162,7 @@ check "the dimension can be changed by function while the table is empty" \
 check "and similar() follows the dimension" \
   "select count(*) from platform.similar(array_fill(0::real,array[1024])::vector, 'probe', 3)" "0"
 
-# What a virgin instance does on a model that is not 1,536-dimensional -- the client's is
+# What a virgin instance does on a model that is not 1,536-dimensional -- a private one often is
 # 4,096 (Qwen3-Embedding-8B). The seed builds the table at 1,536 with an HNSW index; the
 # indexer's first run probes, calls set_vector_dim, and everything downstream has to follow,
 # INCLUDING the next boot's seed. platform.sql created that index unconditionally until
@@ -211,7 +211,7 @@ check "the caretaker's answer reaches the agent" \
 # while it was public. Found 2026-09-16 when a rebuild came back six objects lighter.
 q "select public.skillhub_write_note('agent_01','Vector visibility probe','A public note written by the empty-database test, retired a moment later to pin that a retired object stops being findable by meaning.')" >/dev/null
 q "select public.embed_save_chunks('note', (select id::text from public.notes where title='Vector visibility probe'), 'probe', jsonb_build_array(to_jsonb(array_fill(0::real,array[1536]))), to_jsonb(array['x']), 'h')" >/dev/null
-# One indexing pass at a time (2026-09-22): three callers, no lock, and on a client install two
+# One indexing pass at a time (2026-09-22): three callers, no lock, and on one install two
 # overlapping passes embedded the same document and collided on its key six runs in a row.
 check "the first pass claims the index, the second is refused" \
   "select public.index_run_begin()::text || ':' || public.index_run_begin()::text" "true:false"

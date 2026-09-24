@@ -36,7 +36,7 @@ at all: both servers landed, reconnected after a restart, 11 tools each. It did 
 need `enabled` or `timeout` either, so nothing here spells out shell commands.
 
 **The key is stored in clear text in `config.yaml` on that device.** Whoever holds the
-Chromebook holds the key. That is the accepted trade today; rotate the slot in the
+device holds the key. That is the accepted trade today; rotate the slot in the
 Supabase panel if a machine goes missing.
 
 ## What it is for
@@ -48,7 +48,7 @@ lives only in a pasted prompt is frozen where it was pasted, and eight devices d
 into eight different rulebooks within a month.
 
 That is why the block below got **shorter** on 2026-09-21 rather than longer. Watching the
-first agent on a client install showed two rules missing -- search the store before
+first agent on a fresh install showed two rules missing -- search the store before
 researching something from scratch, and what you find out belongs in the store rather than in
 a file on the machine you are running on. Both went into `skillhub_overview`'s
 `read_this_first`, which every agent reads whoever configured it, and the reading rules that

@@ -42,7 +42,7 @@ the input limit it reports, characters per token measured on this store's kind o
 the chunk size that follows, whether a batch of eight is accepted, and what happens to an
 input over the limit — refused, cut by itself, or cut on request.
 
-It changes nothing and needs no database. Measured against a client's Qwen3-Embedding-8B on
+It changes nothing and needs no database. Measured against a private Qwen3-Embedding-8B on
 vLLM: 4,096 dimensions and therefore no index, 2,048 tokens from `/v1/models`, 4.12
 characters per token, a 7,163-character chunk, eight inputs fine, over-limit refused with
 400 and `truncate_prompt_tokens` accepted.
@@ -65,7 +65,7 @@ seed runs on every boot, so a second run has to be a no-op), and then checks tha
 published through the gate can be retired by its author and ends up deprecated, not deleted".
 
 Among them, the path a first install takes on a model that is not 1,536-dimensional, because
-that is what a client's own embedder usually is: the table is built at 1,536 with an HNSW
+that is what a private embedder usually is: the table is built at 1,536 with an HNSW
 index, the indexer's first run probes and calls `platform.set_vector_dim`, and everything
 downstream has to follow — including **the next boot's seed**, which is where this failed
 until 2026-09-16. Checked at 4,096 (no index, exact scan), at 3,072 (half-precision index)

@@ -39,7 +39,7 @@ language sql stable security definer set search_path = public, platform as $$
     -- a deployment repository. It has to be here, and short enough to be read (2026-09-21).
     'read_this_first', jsonb_build_array(
       'New here, or unsure what this store holds? skillhub_help -- the tour in order, and the finished procedures.',
-      -- The narrow version of this line cost five rounds of deliberation on a client install: an
+      -- The narrow version of this line cost five rounds of deliberation on one install: an
       -- agent asked to research a subject could not tell whether "a question from this data"
       -- covered it, and the reason that did apply -- somebody may have done this already -- was
       -- written nowhere. So the line now names both.

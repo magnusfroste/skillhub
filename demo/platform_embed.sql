@@ -18,7 +18,7 @@
 -- What counts as a heading, asked in one place because three of them used to decide it
 -- separately and all three were wrong in the same way.
 --
--- Measured 2026-09-21 on a client install: an agent researched an ERP system, wrote the result
+-- Measured 2026-09-21 on one install: an agent researched an ERP system, wrote the result
 -- as a 5 KB markdown note, and its MCP client built invalid JSON because the content held
 -- literal newlines inside a string. The agent's fix was to flatten the note to a single line
 -- with spaces. The note then had exactly ONE line -- the whole 5 KB -- which began with "## "
@@ -250,7 +250,7 @@ create table if not exists platform.embedder (
 );
 -- One indexing pass at a time (2026-09-22). Three things call /embed: the cron every five
 -- minutes, the index-on-write trigger on EVERY public write, and platform.reindex(). Nothing
--- stopped them overlapping, and on a client install they did: a caretaker ran a reindex on a
+-- stopped them overlapping, and on one install they did: a caretaker ran a reindex on a
 -- slow embedder while writing notes, each note fired a pass of its own, and two passes took
 -- the same document -- neither saw a current embedding -- and embedded it twice. The save is
 -- delete-then-insert; the second insert waited on the first's uncommitted key and then failed

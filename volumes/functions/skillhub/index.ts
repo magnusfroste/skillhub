@@ -609,7 +609,7 @@ async function handle(body: any, agent: string): Promise<unknown | null> {
         // The text sidecar for a document that is ALREADY in the store. Until 2026-09-22 the
         // only moment that URL existed was the original upload: an agent that had to add the
         // text later -- because the deck had been uploaded with no text, or the wrong line --
-        // had no way back to it. On a client install the caretaker tried uploading the text as
+        // had no way back to it. On one install the caretaker tried uploading the text as
         // a NEW file, was told "already uploaded" without a curl line, created five stray
         // document rows over five attempts, and finally hand-built a signed URL to the sidecar
         // path with the service key. An ordinary agent could not have done the last step.
@@ -670,7 +670,7 @@ async function handle(body: any, agent: string): Promise<unknown | null> {
           document_id: reg.id, path, already_uploaded: false, duplicate_of: reg.duplicate_of ?? null,
           upload_with: `curl -sS -T '<the file>' '${url}'`,
           // One line per file type, and it has to exist for the types people actually hand over.
-          // 2026-09-22 on a client install: a slide deck was uploaded with the pdftotext line
+          // 2026-09-22 on one install: a slide deck was uploaded with the pdftotext line
           // beside it, which cannot read a .pptx, so the file sat catalogued and unsearchable
           // until the caretaker went looking for the text itself. Office files are zip archives
           // of XML, read with python3's zipfile -- see PPTX_TEXT_LINE for why not unzip.

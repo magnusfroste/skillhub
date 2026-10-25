@@ -629,3 +629,23 @@ services:
       - name: basic-auth
         config:
           hide_credentials: true
+      # skillhub: Studio is the whole database behind one password, and basic-auth has no
+      # lockout. A rate-limiting plugin does not help here: Kong runs basic-auth (priority
+      # 1100) before rate-limiting (910), so a wrong password is refused before it is counted
+      # -- measured 2026-10-21, a 401 carried no rate-limit headers. pre-function runs first
+      # of all: it refuses an IP with 20 failed logins in the last 15 minutes, and counts each
+      # 401 on the way out. The IP is the real client's (KONG_TRUSTED_IPS in
+      # docker-compose.yml), else every visitor would share one counter.
+      - name: pre-function
+        config:
+          access:
+            - |
+              local fails = ngx.shared.kong_rate_limiting_counters:get("dashboard_401:" .. kong.client.get_forwarded_ip())
+              if fails and fails >= 20 then
+                return kong.response.exit(429, { message = "Too many failed logins from this address. Wait 15 minutes." })
+              end
+          header_filter:
+            - |
+              if kong.response.get_status() == 401 then
+                ngx.shared.kong_rate_limiting_counters:incr("dashboard_401:" .. kong.client.get_forwarded_ip(), 1, 0, 900)
+              end

@@ -583,6 +583,15 @@ begin
                   where a.attrelid = rel and a.attname = 'owner' and a.attnum > 0 and not a.attisdropped)
     into has_owner;
 
+  -- skill_library keeps its author in author_name, not owner. Without this, a team or private
+  -- skill was readable in full (skill_md) by every agent through this tool. Found 2026-10-21.
+  if not has_owner and exists (select 1 from pg_attribute a where a.attrelid = rel
+                                 and a.attname = 'author_name' and a.attnum > 0 and not a.attisdropped)
+                   and exists (select 1 from pg_attribute a where a.attrelid = rel
+                                 and a.attname = 'visibility' and a.attnum > 0 and not a.attisdropped) then
+    wheres := wheres || format('platform.may_read(visibility, author_name, %L)', agent)::text;
+  end if;
+
   -- Time buckets. "How has quality developed per month" is one of the two questions a
   -- quality register exists to answer, and it was unanswerable: date_trunc is an expression
   -- and this tool refuses expressions on purpose, because accepting them turns it into a SQL

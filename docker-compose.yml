@@ -113,6 +113,9 @@ services:
       # kong.yml and absent here is a crash loop at start, not a warning. Measured 2026-09-22
       # on dev: `kong config parse` passed and the container restarted every few seconds.
       KONG_PLUGINS: request-transformer,cors,key-auth,acl,basic-auth,request-termination,ip-restriction,post-function,request-size-limiting,rate-limiting
+      # nginx defaults to one worker per core: 32 on a 32-core host, 3.5 GiB for a gateway
+      # that serves a handful of agents. Measured 2026-10-21.
+      KONG_NGINX_WORKER_PROCESSES: ${KONG_NGINX_WORKER_PROCESSES:-2}
       KONG_NGINX_PROXY_PROXY_BUFFER_SIZE: 160k
       KONG_NGINX_PROXY_PROXY_BUFFERS: 64 160k
       KONG_PROXY_ACCESS_LOG: /dev/stdout combined

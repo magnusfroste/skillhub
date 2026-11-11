@@ -64,7 +64,13 @@ def main():
     s, d = call("initialize", {"protocolVersion": "2025-03-26", "capabilities": {}, "clientInfo": {"name": "old", "version": "1"}})
     r = d.get("result", {})
     check("initialize -> 200 with protocolVersion 2025-03-26", s == 200 and r.get("protocolVersion") == "2025-03-26", str(d)[:140])
-    check("resultType=complete and _meta.serverInfo on the result", r.get("resultType") == "complete" and r.get("_meta", {}).get(SI, {}).get("name") == "skillhub")
+    # No 2026-07-28 keys for a legacy client: a strict SDK (AnythingLLM) refuses initialize
+    # over an unknown resultType. _meta is allowed in every era, so serverInfo stays.
+    check("no resultType/ttlMs/cacheScope, _meta.serverInfo on the result",
+          not {"resultType", "ttlMs", "cacheScope"} & r.keys() and r.get("_meta", {}).get(SI, {}).get("name") == "skillhub", str(r.keys()))
+    s, d = call("tools/list", {})
+    check("tools/list without _meta has no 2026-07-28 keys",
+          s == 200 and not {"resultType", "ttlMs", "cacheScope"} & d.get("result", {}).keys(), str(d.get("result", {}).keys()))
     s, d = call("tools/call", {"name": "skillhub_whoami", "arguments": {}})
     legacy_who = who(d)
     check("tools/call whoami without _meta answers an agent", s == 200 and bool(legacy_who), str(d)[:140])

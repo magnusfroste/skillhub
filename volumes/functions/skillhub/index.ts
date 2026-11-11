@@ -414,9 +414,8 @@ async function callRpc(fn: string, args: Record<string, unknown>): Promise<unkno
 }
 
 // Every result carries resultType ("complete" for an ordinary answer) and the server's
-// identity in _meta, both from 2026-07-28. Legacy clients ignore fields they do not know, and
-// the spec requires modern clients to treat an ABSENT resultType as complete -- so adding it
-// unconditionally is safe in both directions.
+// identity in _meta, both from 2026-07-28. A legacy client does not get the era's new
+// top-level fields: forLegacy() strips them before the answer leaves (see there for why).
 const rpcOk = (id: unknown, result: Record<string, unknown>) => ({
   jsonrpc: "2.0", id,
   result: {
@@ -427,6 +426,20 @@ const rpcOk = (id: unknown, result: Record<string, unknown>) => ({
 });
 const rpcErr = (id: unknown, code: number, message: string, data?: unknown) =>
   ({ jsonrpc: "2.0", id, error: { code, message, ...(data === undefined ? {} : { data }) } });
+// The top-level result fields 2026-07-28 added. They looked harmless to a legacy client, which
+// the older spec tells to ignore what it does not know -- but the TypeScript SDK that some
+// clients ship parses results strictly: AnythingLLM refused initialize over "Unrecognized key:
+// resultType" (2026-11-11). So a legacy client gets exactly its era's shape. _meta stays: every
+// era allows any key inside it. A request is modern when it declares 2026-07-28 in _meta, or
+// is server/discover, which only a modern or dual-era client sends.
+const MODERN_ONLY_RESULT_KEYS = ["resultType", "ttlMs", "cacheScope"];
+function forLegacy(body: any, answer: unknown): unknown {
+  const modern = body?.method === "server/discover" ||
+    body?.params?._meta?.[META_VERSION] === PROTOCOL_MODERN;
+  const result = (answer as { result?: Record<string, unknown> } | null)?.result;
+  if (!modern && result) for (const k of MODERN_ONLY_RESULT_KEYS) delete result[k];
+  return answer;
+}
 // Errors the spec says must travel with HTTP 400 on Streamable HTTP.
 const BAD_REQUEST_CODES = new Set([-32602, -32021, -32022]);
 
@@ -858,7 +871,7 @@ Deno.serve(async (req: Request) => {
     return Response.json(rpcErr(null, -32700, "Invalid JSON"), { status: 400 });
   }
 
-  const answer = await handle(body, agent);
+  const answer = forLegacy(body, await handle(body, agent));
   if (answer === null) return new Response(null, { status: 202 });
   // The spec requires HTTP 400 for malformed modern requests and unsupported versions, so a
   // dual-era client can tell a modern server from a legacy one by the body of the 400.
